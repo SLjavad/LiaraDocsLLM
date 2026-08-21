@@ -44,8 +44,9 @@ modes sharing one retrieval index:
 - Frontend: Next.js + TypeScript + shadcn/ui.
 - Data: PostgreSQL + pgvector (doc chunks, sessions, messages, quiz state),
   Redis (cache, rate limiting, spend guard).
-- Ingestion: existing Node crawler (`indexer/`, reused/adapted) → .NET worker
-  (chunk, embed, upsert).
+- Ingestion: in-process (AngleSharp crawler + chunker + embedder), auto-run
+  once on first boot by a hosted background service — no separate worker, no
+  human trigger, no Node.js dependency. See §Non-negotiable 9.
 - All LLM calls (chat, router, embeddings) go through an OpenAI-compatible
   client — provider is config, never a code dependency.
 
@@ -82,13 +83,18 @@ looking shortcut. Don't.
    verbatim from `04-prompts.md`. Writing new prompt wording inline while
    implementing is out of scope for a coding agent here — that's a tech-lead
    edit to `04-prompts.md`.
+9. **Ingestion is fully automatic — never require a human to trigger it.**
+   A hosted background service checks `doc_chunks` on startup and runs the
+   crawl/chunk/embed pipeline itself if empty, then never again once
+   populated. No separate console app, no "run this script first" step in
+   any README. See `02-technical-spec.md` §2a.
 
 ## Repo layout (target — see `03-plan.md` Phase 1 for the full scaffold)
 
 ```
-backend/        ASP.NET Core API, Agent Framework orchestrator, EF Core
+backend/        ASP.NET Core API + Agent Framework orchestrator + EF Core +
+                 in-process ingestion background service (AngleSharp)
 frontend/       Next.js + shadcn/ui
-ingestion/      crawler (Node) + Ingestion.Worker (.NET)
 specs/          this project's specs (source of truth)
 docker-compose.yml   local Postgres+pgvector, Redis
 .env.example

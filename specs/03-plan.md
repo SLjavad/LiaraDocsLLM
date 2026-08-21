@@ -28,22 +28,24 @@ real values swapped in later:
 
 ## Phase 1 — Repo scaffolding & infra plumbing
 
-Target structure:
+Target structure — everything backend is **one solution, one deployable
+process** (01-architecture.md §3), no separate ingestion service/language:
 ```
 LiaraChallenge/
   specs/                     (done)
   backend/
     LiaraDocsAssistant.sln
     src/
-      Api/                   ASP.NET Core Web API — endpoints, SSE, middleware
+      Api/                   ASP.NET Core Web API — endpoints, SSE, middleware,
+                              Program.cs registers IngestionBackgroundService
       Agent/                 Microsoft Agent Framework orchestrator, tools, prompts
       Retrieval/             search_docs hybrid retrieval service
+      Ingestion/             AngleSharp crawler + chunker + embedder (Phase 2),
+                              referenced by Api as a hosted service, not a
+                              separate console app
       Data/                  EF Core DbContext, entities, migrations
-      Ingestion.Worker/      .NET console Ingestor (Phase 2 step 2)
     tests/
   frontend/                  Next.js + shadcn/ui
-  ingestion/
-    crawler/                 adapted Node indexer (Phase 2 step 1)
   docker-compose.yml         local Postgres+pgvector, Redis
   .env.example
 ```
@@ -62,32 +64,45 @@ LiaraChallenge/
 - Redis client wiring: key scheme from 02-technical-spec §3 (rate limit, spend guard,
   caches) — services can be scaffolded now, business logic lands in Phase 3–4.
 
-## Phase 2 — Ingestion pipeline (01-architecture §4, 02-technical-spec §1–2)
+## Phase 2 — Ingestion background service (01-architecture §4, 02-technical-spec §1–2a)
 
-1. **Node crawler** (`ingestion/crawler/`, adapted from `indexer/`): switch the
-   existing (currently dead/commented) JSON-dump step on instead of pushing to
-   Meilisearch. Add category tagging from the URL path segment (02-technical-spec §2
-   taxonomy table). Run against `docs.liara.ir` → `crawl-doc-data.json`.
-2. **.NET `Ingestion.Worker`**: read the JSON dump, normalize text, chunk
-   (merge tiny/split oversized sections), call the embedding endpoint
-   (batched), upsert into `doc_chunks` keyed by `(url, anchor)` with
-   `content_hash` idempotency (02-technical-spec §1).
-3. **QA pass** (01-architecture §4 QA step + §11 risk):
+Fully automatic — no manual crawler run, no separate worker to invoke. Build
+`backend/src/Ingestion/` and wire it as a hosted service:
+
+1. **`IngestionBackgroundService`** (`BackgroundService`, registered in
+   `Api`'s `Program.cs`): on startup, apply migrations
+   (`Database.MigrateAsync()`), then check `doc_chunks` row count — skip if
+   already populated, otherwise run steps 2–4 in the background (API keeps
+   serving requests immediately, per 02-technical-spec §2a).
+2. **Crawl** (AngleSharp): fetch `DOCS_SITEMAP_URL`, filter by taxonomy path
+   prefixes, fetch+parse each page (`h1` title, `h2`–`h6` section
+   boundaries, anchor from heading/adjacent element `id`), category from URL
+   path segment. Bounded concurrency (`CRAWL_CONCURRENCY`, `CRAWL_DELAY_MS`)
+   — **not** the original indexer's serial 4.5s delay, which would make this
+   take 80+ minutes.
+3. **Chunk/embed/upsert**: as in `02-technical-spec.md` §1 — one chunk per
+   section, batch-embed, upsert into `doc_chunks` keyed by `(url, anchor)`
+   with `content_hash` idempotency.
+4. **QA pass** (01-architecture §4 QA step + §11 risk) — do this on the
+   first real run against the live site, before trusting the auto-trigger in
+   other environments:
    - Spot-check a sample of chunks — do `anchor` links resolve to the right
      in-page section?
-   - **Rate-limit check (do this first, before running the full corpus)**:
-     embed a small batch (~20 chunks) via OpenRouter's free-tier
-     `nemotron-3-embed-1b` and confirm it can sustain the full ~3–6k chunk
-     ingestion without excessive throttling. If not, switch
-     `EMBEDDING_MODEL_NAME`/`EMBEDDING_BASE_URL`/`EMBED_DIM` to the
-     `text-embedding-3-small` fallback (01-architecture §11) and proceed —
-     config-only change.
+   - **Rate-limit check**: confirm OpenRouter's free-tier `nemotron-3-embed-1b`
+     sustains the full ~3–6k chunk batch without excessive throttling. If
+     not, switch `EMBEDDING_MODEL_NAME`/`EMBEDDING_BASE_URL`/`EMBED_DIM` to
+     the `text-embedding-3-small` fallback (01-architecture §11) — config-only
+     change.
    - Cross-lingual smoke test: run a handful of English queries against the
      (mostly Persian) corpus and check top results are sensible — the model's
      published Persian benchmark makes this a confirmation pass, not a
      from-scratch risk.
    - Sanity-check chunk count/size distribution against the ~200–800 token
      estimate; tune chunking if far off.
+   - Time the full run once — confirm it lands in the ~5–20 min estimate
+     (01-architecture §4); if `docs.liara.ir` pushes back under the default
+     concurrency (errors, throttling), dial `CRAWL_CONCURRENCY`/
+     `CRAWL_DELAY_MS` down rather than pushing through.
 
 ## Phase 3 — Retrieval + Router + `/api/search`
 
@@ -175,11 +190,18 @@ app shell + `SessionProvider` + `ModeNav` → API client layer (§3) →
 - Provision Liara Postgres (pgvector) and Redis DBaaS — or the self-hosted
   Postgres+pgvector fallback if Phase 0 found extensions unavailable.
 - Set env vars per 02-technical-spec §8 config table on both Liara apps.
-- Run ingestion once against the deployed DB (point `Ingestion.Worker` at the
-  prod connection string, or re-run the whole pipeline).
-- Re-run the golden set against the deployed instance before calling it done.
+- No manual ingestion step here — it runs automatically on the backend's
+  first boot against the fresh (empty) production DB. Just wait for it
+  (~5–20 min, 01-architecture §4) before treating the deployment as done.
+- Re-run the golden set against the deployed instance **after** confirming
+  ingestion has completed (check logs for the completion line, §2a) — not
+  immediately after deploy.
 
 ## Phase 8 — Demo prep
+
+**Deploy well ahead of the demo slot, not minutes before** — first-boot
+ingestion takes ~5–20 min in the background (01-architecture §4/§11), and
+retrieval degrades to "still building my knowledge base" until it finishes.
 
 Script a run-through covering, in order: a simple question, a complex
 multi-hop question, an ambiguous question that triggers triage, a general

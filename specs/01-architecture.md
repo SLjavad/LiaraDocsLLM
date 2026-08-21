@@ -37,7 +37,9 @@ that actually answers their question.
   boundary.
 - No human ticket creation — on unresolved issues we point to the existing
   support channel, we don't integrate with it.
-- No scheduled/automatic re-crawling — ingestion is a manual, re-runnable step.
+- No *recurring/scheduled* re-crawling — ingestion runs automatically once
+  (on first boot, when the index is empty), not manually, and not on a
+  timer. See §4.
 
 ## 2. Response modes
 
@@ -62,66 +64,98 @@ Three modes, sharing one retrieval index:
 ```
                     ┌─────────────────────┐
                     │  Frontend (Next.js) │
-                    │  shadcn/ui + AI SDK │
+                    │  shadcn/ui         │
                     └──────────┬──────────┘
                                │ HTTP (SSE stream)
-                    ┌──────────▼──────────┐
-                    │  Backend API (.NET) │
-                    │  ASP.NET Core       │
-                    │  Microsoft Agent    │
-                    │  Framework          │
-                    └────┬────────────┬───┘
-                         │            │
-                ┌────────▼───┐   ┌────▼─────┐
-                │ PostgreSQL │   │  Redis   │
-                │ + pgvector │   │  cache + │
-                │ (chunks,   │   │  rate    │
-                │ sessions)  │   │  limit + │
-                │            │   │  spend   │
-                │            │   │  guard   │
-                └────────────┘   └──────────┘
-                         ▲
-                         │ upsert (offline, one-off)
-                ┌────────┴───────────┐
-                │ Ingestion pipeline │
-                │ 1) Node crawler    │
-                │    (reused as-is) │
-                │ 2) .NET embed+load │
-                └────────────────────┘
-                         │
-                  docs.liara.ir (source)
+                    ┌──────────▼──────────────────┐
+                    │  Backend API (.NET) — one   │
+                    │  process, one deploy unit   │
+                    │  ┌────────────────────────┐ │
+                    │  │ ASP.NET Core Web API   │ │
+                    │  │ + Microsoft Agent      │ │
+                    │  │   Framework            │ │
+                    │  ├────────────────────────┤ │
+                    │  │ IngestionBackgroundSvc │◄┼──── docs.liara.ir
+                    │  │ (hosted service, runs  │ │     (crawled via
+                    │  │ once on first boot if  │ │      AngleSharp, C#)
+                    │  │ doc_chunks is empty)   │ │
+                    │  └────────────────────────┘ │
+                    └────┬────────────────────┬───┘
+                         │                     │
+                ┌────────▼───┐            ┌────▼─────┐
+                │ PostgreSQL │            │  Redis   │
+                │ + pgvector │            │  cache + │
+                │ (chunks,   │            │  rate    │
+                │ sessions)  │            │  limit + │
+                │            │            │  spend   │
+                │            │            │  guard   │
+                └────────────┘            └──────────┘
 ```
 
 All LLM calls (chat + embeddings) go through an OpenAI-compatible HTTP client —
 provider is a config value (base URL + key), not a code dependency. This covers
 GPT/DeepSeek/MiMo/Liara AI Gateway/etc. without rewrites.
 
-Backend is **stateless** — all durable state lives in Postgres (sessions,
-messages, doc chunks) and Redis (cache, rate limits, spend counters), so it can
-scale horizontally on Liara by adding instances, with no code change.
+**Single deployable unit**: crawling, chunking, embedding, and serving all
+live in one .NET process (one Liara App, one container) — no separate
+ingestion worker to deploy or trigger, no Node.js dependency. Backend is
+otherwise **stateless** — all durable state lives in Postgres (sessions,
+messages, doc chunks) and Redis (cache, rate limits, spend counters), so it
+can scale horizontally on Liara by adding instances, with no code change.
+Pending EF Core migrations apply automatically at startup
+(`Database.MigrateAsync()`) — no manual `dotnet ef database update` either.
 
 ## 4. Ingestion pipeline
 
-- **Step 1 (reuse, Node)**: `indexer/` crawlers already fetch rendered pages from
-  `docs.liara.ir` via cheerio and split by `<Section>` into
-  `{ url, title, body, element(anchor), platform, type }`. Un-comment the existing
-  (currently dead) JSON dump step instead of pushing to Meilisearch. Output:
-  `crawl-doc-data.json`.
-- **Step 2 (new, .NET console worker `Ingestor`)**:
-  1. Read the JSON dump.
-  2. Normalize/clean text (strip residual JSX artifacts, collapse whitespace).
-  3. Chunk: one chunk per crawled section already (~200–800 tokens each based on
-     the site's actual section sizes); merge tiny adjacent sections, split
-     oversized ones on paragraph boundaries.
-  4. Call embedding endpoint per chunk (batched).
-  5. Upsert into Postgres `doc_chunks` table (see `02-technical-spec.md` for schema) keyed by
-     `url + element` so re-runs are idempotent.
-- **QA step**: after first ingestion run, spot-check a sample of chunks to
-  confirm `element` anchors actually resolve to the right in-page section (the
-  crawler's anchor heuristic can miss) — otherwise citations link to the top of
-  a page instead of the exact section, hurting AC1 ("providing appropriate
-  sources") and AC2 (link presentation).
-- Re-run manually when docs change (no scheduling needed for MVP).
+Fully automatic, no human trigger, part of the same process that serves the
+API (§3). Reimplemented in C# (AngleSharp for HTML parsing) rather than
+reusing Liara's Node `indexer/` — a background job inside a single .NET
+process is simpler to operate than a cross-language handoff, and the
+crawling logic itself (fetch a page, pull sections/headings, extract text
+and anchors) isn't complex enough to be worth the Node dependency just to
+reuse it.
+
+**Trigger**: `IngestionBackgroundService` (an `IHostedService`) runs once at
+startup. It checks `select count(*) from doc_chunks`; if zero, it runs the
+full pipeline below in the background — the API still starts and accepts
+requests immediately, it does not block on this. If `doc_chunks` already has
+rows (any restart after the first successful run), it skips entirely — no
+re-crawl on every boot.
+
+**Pipeline** (same steps as before, just one process, auto-triggered):
+1. Crawl `docs.liara.ir` (AngleSharp: fetch each page, parse structurally the
+   same way Liara's own indexer does — `h1`/`Section` boundaries — into
+   `{ url, title, body, anchor, platform, category }`, category from the URL
+   path segment per §2 taxonomy).
+2. Chunk: one chunk per crawled section (~200–800 tokens); merge tiny
+   adjacent sections, split oversized ones on paragraph boundaries.
+3. Embed each chunk (batched calls to the embedding endpoint).
+4. Upsert into `doc_chunks` keyed by `(url, anchor)`, `content_hash`-gated so
+   a future re-run (if ever manually forced) skips unchanged chunks.
+
+**Speed, not just cost**: Liara's own crawler serializes with a ~4.5s delay
+between page fetches (82+ minutes for 1100 pages) — too slow to sit in front
+of a "just works" deploy. Use **moderate concurrency instead of full serial
+politeness** — a small worker pool (`CRAWL_CONCURRENCY`, default 5) with a
+modest per-worker delay (`CRAWL_DELAY_MS`, default 300) between its own
+requests. Realistic first-boot time with this: **roughly 5–20 minutes**
+(crawl a few minutes, embedding a few minutes more, longer if the free
+embedding tier throttles — §11). Cost is trivial either way (crawling has no
+API cost; embedding ~3–6k chunks costs cents at most) — time, not money, is
+the real constraint here.
+
+**Graceful degradation while ingesting**: if `search_docs` runs against an
+empty/partial index, it naturally returns nothing, and the existing
+groundedness fallback ("couldn't find a confident answer" — §7) already
+covers this without new logic. Worth a slightly more specific message when
+the table is confirmed empty ("still building my knowledge base, try again
+shortly") vs. the generic low-confidence message, but the safety net exists
+either way.
+
+**QA step**: after the first successful run, spot-check a sample of chunks
+to confirm `anchor` values actually resolve to the right in-page section —
+otherwise citations link to the top of a page instead of the exact section,
+hurting AC1 ("providing appropriate sources") and AC2 (link presentation).
 
 ## 5. Retrieval
 
@@ -425,6 +459,12 @@ Details for NFR1–NFR15 not already covered above:
 - Chunk size is an estimate pending actually running the crawler against the live
   site — may need tuning after first ingestion run.
 - No offline quality baseline yet — see §12 proposal for a small golden test set.
+- **First-boot latency**: the app is reachable immediately after deploy, but
+  full retrieval capability isn't available until background ingestion
+  finishes (~5–20 min estimate, §4) — deploy well before a live demo, not
+  minutes before. If the crawl concurrency setting turns out too aggressive
+  for `docs.liara.ir` to handle comfortably, dial `CRAWL_CONCURRENCY`/
+  `CRAWL_DELAY_MS` back — it's a config change, not a redesign.
 
 ## 12. Deprioritized / optional enhancements
 

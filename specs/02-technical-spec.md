@@ -24,6 +24,7 @@ lead updates this section; don't self-upgrade mid-build.
 | EF Core | **10.x** (paired with .NET 10) | |
 | `Pgvector` | **0.3.2+** | C# `Vector` type for pgvector columns |
 | `Pgvector.EntityFrameworkCore` | **0.3.0** | EF Core integration for `Pgvector` — see §1a for how it's used |
+| `AngleSharp` | **1.5.2** | HTML parsing for the in-process crawler (§4a) — replaces the earlier Node/cheerio reuse plan; targets net10.0 directly |
 | `Serilog.AspNetCore` | latest stable at build time | structured logging, NFR3 |
 | `StackExchange.Redis` | latest stable at build time | Redis client |
 | `Microsoft.Extensions.Http.Resilience` | latest stable at build time | timeout/retry, NFR4 |
@@ -166,6 +167,10 @@ instead, inside a normal EF Core migration:
   `.OrderBy(c => c.Embedding.CosineDistance(queryVector))` — use that for the
   retrieval service rather than raw SQL, it's the well-supported part of the
   package.
+- Steps 1–3 above are a one-time **dev-time** action (write the migration
+  file, commit it). **Applying** the migration at runtime is automatic —
+  `Database.MigrateAsync()` runs at API startup (§2a) — no one ever runs
+  `dotnet ef database update` by hand, locally or on Liara.
 
 ## 2. Documentation taxonomy
 
@@ -189,6 +194,44 @@ ingestion (category = URL path segment), and by the `category` filter on
 `/mirrors` and `/tv` pages exist on the site but are outside the sitemap
 parser's crawl targets — excluded from ingestion scope, not part of the
 taxonomy.
+
+## 2a. Ingestion background service
+
+Implements `01-architecture.md` §4 (auto-triggered, single-process, no human
+trigger). Concrete mechanics:
+
+- **Registration**: `IngestionBackgroundService : BackgroundService`,
+  registered with `builder.Services.AddHostedService<IngestionBackgroundService>()`
+  in the API's `Program.cs`. Runs once in `ExecuteAsync` at startup, not on a
+  timer.
+- **Startup sequence**: (1) `await db.Database.MigrateAsync()` — apply any
+  pending EF Core migrations automatically, no manual `dotnet ef database
+  update`; (2) `await db.DocChunks.CountAsync()` — if `> 0`, return
+  immediately (already ingested on a prior boot, skip); if `0`, run the
+  pipeline below.
+- **Enumerate pages**: fetch `DOCS_SITEMAP_URL`
+  (`https://docs.liara.ir/sitemap.xml`), filter URLs by the path prefixes in
+  §2's taxonomy table (same filtering Liara's own indexer does in
+  `getUrl.js`).
+- **Crawl** (AngleSharp, §0): for each URL, fetch the HTML and parse with
+  `AngleSharp.Html.Parser.HtmlParser`. Extract `h1` text as the page title,
+  then split into sections by heading elements (`h2`–`h6`) the same way the
+  original crawler does: section title = heading text, section body = text
+  of siblings up to the next heading, anchor = the heading's (or its
+  adjacent element's) `id` attribute if present. Concurrency: a bounded
+  worker pool (`SemaphoreSlim(CRAWL_CONCURRENCY)`); each worker waits
+  `CRAWL_DELAY_MS` between its own consecutive requests — not a single
+  global serial delay (that's what made the original 82+ minutes).
+- **Chunk/embed/upsert**: as in §1 — one chunk per section, `content_hash =
+  sha256(body)`, batch-embed, upsert into `doc_chunks` keyed on
+  `(url, anchor)`.
+- **Failure handling**: a single page failure (timeout, 404, transient
+  error) is logged and skipped — it does not abort the whole run. The
+  pipeline should finish with whatever it could reach, consistent with the
+  NFR4 resilience philosophy applied elsewhere.
+- **Observability**: log run start, periodic progress (every N pages), and
+  completion (chunk count, duration) via Serilog (NFR3) — this is the only
+  visibility into ingestion progress for MVP; no separate status endpoint.
 
 ## 3. Redis key scheme
 
@@ -442,6 +485,9 @@ mechanics (`.env.example` vs `.env`, `.gitignore`).
 | `MAX_INPUT_CHARS` | NFR9 | `2000` |
 | `CORS_ALLOWED_ORIGIN` | NFR12 | frontend URL |
 | `SUPPORT_CHANNEL_URL` | escalation fallback (01-architecture.md §7) | Liara support link |
+| `DOCS_SITEMAP_URL` | §2a ingestion | `https://docs.liara.ir/sitemap.xml` |
+| `CRAWL_CONCURRENCY` | §2a — bounded worker pool size | `5` |
+| `CRAWL_DELAY_MS` | §2a — per-worker delay between its own requests | `300` |
 
 ## 9. Git hygiene & config loading
 
