@@ -168,7 +168,14 @@ that serves the API (§3) — no separate worker to deploy.
    too slow for a fallback path that's supposed to be self-healing, not a
    normal path).
 2. Chunk: one chunk per crawled section (~200–800 tokens); merge tiny
-   adjacent sections, split oversized ones on paragraph boundaries.
+   adjacent sections, split oversized ones on paragraph boundaries. This
+   size is driven by **citation granularity** (FR2 needs to cite the
+   specific section, not just the page, and a single embedding covering
+   multiple sub-topics ranks worse for precise retrieval) — not by any
+   input-length limit. The embedding model's 32k-token context window means
+   it *could* accept much larger inputs without truncating, but that isn't
+   a reason to chunk coarser; don't let "the model supports longer input"
+   override the section-level chunking design.
 3. Embed each chunk, batched per §4c.
 4. Upsert into `doc_chunks` keyed by `(url, anchor)`, `content_hash`-gated.
 
@@ -211,15 +218,21 @@ the exact section, hurting AC1 ("providing appropriate sources") and AC2
   score`. Backend enforces a token budget on what's stuffed into context.
 - **Embedding model**: `nvidia/nemotron-3-embed-1b:free` via OpenRouter —
   #1 on RTEB, explicitly benchmarked on Persian among 34 languages, free,
-  2048-dim (verify empirically in Phase 2 — one secondary source suggested
-  4096, which looks like it's describing the 8B variant, not the 1B one we
-  use, but confirm against the actual returned vector length before locking
-  in `EMBED_DIM`). Largely resolves the earlier Persian↔English
-  cross-lingual risk (published benchmark, not just an assumption); still
-  worth a quick smoke test on our actual doc chunks in Phase 2 QA as
-  standard practice, and confirming OpenRouter's free-tier rate limit can
-  sustain bulk ingestion — fallback is `openai/text-embedding-3-small` via
-  the Liara AI Gateway if not (§11).
+  **2048-dim** (now confirmed by two independent sources — NVIDIA's own
+  model card and a separate technical write-up; the earlier "possibly 4096"
+  ambiguity looks like it was describing the 8B variant, not the 1B one we
+  use. Still worth a cheap sanity check against the actual returned vector
+  length in Phase 2 before locking `EMBED_DIM`, but this is now a
+  confirmation step, not an open question). We consume this model purely
+  through OpenRouter's hosted API — any self-hosting/quantization
+  configuration (4-bit, `bitsandbytes`, etc.) some write-ups describe for
+  running it locally does not apply to us and shouldn't be configured.
+  Largely resolves the earlier Persian↔English cross-lingual risk
+  (published benchmark, not just an assumption); still worth a quick smoke
+  test on our actual doc chunks in Phase 2 QA as standard practice, and
+  confirming OpenRouter's free-tier rate limit can sustain bulk ingestion —
+  fallback is `openai/text-embedding-3-small` via the Liara AI Gateway if
+  not (§11).
 - **Instruction prefixes are required for this model** (confirmed on
   NVIDIA's own model card, not just a blog post) — it's an asymmetric
   retrieval model trained expecting `"query: "` prepended to search queries
