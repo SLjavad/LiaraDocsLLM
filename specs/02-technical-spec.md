@@ -61,7 +61,7 @@ create table doc_chunks (
   platform      text,                 -- nextjs|django|nodejs|... nullable
   body          text not null,
   token_count   int not null,
-  embedding     vector(EMBED_DIM) not null,  -- EMBED_DIM fixed at migration time, see §7
+  embedding     vector(EMBED_DIM) not null,  -- EMBED_DIM fixed at migration time, see §1a
   content_hash  text not null,        -- sha256(body); skip re-embedding unchanged chunks on re-ingest
   created_at    timestamptz not null default now(),
   updated_at    timestamptz not null default now(),
@@ -363,7 +363,9 @@ Events (each `data:` line is JSON):
 | `done` | `{}` | end of turn |
 | `error` | `{ "message": "...", "retryable": true }` | NFR4 failure path, in place of a raw 500 |
 
-### `POST /api/practice/start` — §6a Practice Mode
+### 6a. Practice Mode endpoints
+
+#### `POST /api/practice/start`
 
 Plain JSON, not SSE — a quiz is a structured object, not prose to stream.
 
@@ -379,6 +381,11 @@ Response (needs narrowing — reuses triage, same 2-round cap as chat):
 ```json
 { "status": "needs_clarification", "question": "...", "triageRound": 1 }
 ```
+Response (topic is in-scope but too few sub-topics grounded above the
+threshold to reach `PRACTICE_MIN_STEPS` — 01-architecture.md §7):
+```json
+{ "status": "insufficient_material", "message": "..." }
+```
 Response (ready — full plan generated, but only the current step's question/
 options are sent; `correctIndex`/`explanation`/`source` for *future* steps are
 never sent ahead of time, so they can't be read from the network tab):
@@ -392,7 +399,7 @@ never sent ahead of time, so they can't be read from the network tab):
 }
 ```
 
-### `POST /api/practice/{examId}/answer`
+#### `POST /api/practice/{examId}/answer`
 
 Request:
 ```json
@@ -412,7 +419,7 @@ Response — grading is a code-level index comparison against the pre-planned
 `next` is `null` on the last step — the frontend should then call the summary
 endpoint.
 
-### `GET /api/practice/{examId}/summary`
+#### `GET /api/practice/{examId}/summary`
 
 ```json
 {
@@ -564,10 +571,8 @@ mechanics (`.env.example` vs `.env`, `.gitignore`).
 
 ## 10. Open implementation notes
 
-- `EMBED_DIM` must be locked in before the first ingestion run; pgvector
-  columns are fixed-dimension, so a provider/model change means a migration +
-  full re-embed, not a config tweak.
-- Refusal/trivial templates (§4) need both `fa` and `en` variants per `reason`
-  code — write these once, review for tone before demo.
+- Refusal/trivial templates already exist verbatim (fa+en, all `reason`
+  codes) in `04-prompts.md` §4 — what's still open is a tone-review pass
+  before demo, not writing them.
 - `content_hash` dedup (§1) assumes ingestion is re-run wholesale each time;
   no incremental/partial crawl in MVP scope.

@@ -425,6 +425,11 @@ Full request/response schemas go in `02-technical-spec.md`.
     drop it (pick a different sub-topic, or reduce step count) rather than
     generating an ungrounded question — and log it to `doc_gap_events` (mode
     `practice`) the same way low-confidence retrieval is logged elsewhere.
+  - **If too few sub-topics ground successfully**: after dropping ungrounded
+    ones, if what's left is below `PRACTICE_MIN_STEPS`, don't silently run a
+    shorter quiz — tell the user this topic doesn't have enough documented
+    material for a good quiz yet, and suggest Find-in-docs or a narrower
+    topic instead.
   - **Distractor quality**: the 2 wrong options must be plausible (same
     category as the correct answer — both real config values, both real CLI
     flags, etc.) but unambiguously wrong once the explanation is read, and must
@@ -565,25 +570,28 @@ Details for NFR1–NFR15 not already covered above:
 
 ## 11. Open risks / assumptions
 
-- ~~Assumes Liara Postgres DBaaS allows installing the `pgvector` extension~~ —
-  **confirmed available.** No fallback needed.
+- pgvector extension: confirmed available on Liara's managed Postgres — no
+  self-hosted fallback needed.
 - Assumes the eventual chat-model API key's provider is OpenAI-wire-compatible
   (chat completions + tool calling). Embeddings may come from a different
   provider (confirmed acceptable).
-- Embedding model (`nemotron-3-embed-1b`) is very recent (released July 2026)
-  and OpenRouter's free tier may rate-limit bulk ingestion — verify early in
-  Phase 2; fallback is `text-embedding-3-small` via the Liara AI Gateway
-  (config-only change, no logic change).
-- **OpenRouter free-tier rate limits** (verified directly against
-  OpenRouter's docs, not assumed): 20 requests/minute always; 50/day with no
-  prior credits, 1,000/day once the account has $10+ in lifetime credits
-  purchased. $10 is being purchased (per SLjavad) — removes the daily-cap
+- **OpenRouter free-tier limits for `nemotron-3-embed-1b`** (verified
+  directly against OpenRouter's docs, not assumed): 20 requests/minute
+  always; 50/day with no prior credits, 1,000/day with $10+ in lifetime
+  credits — $10 is being purchased (per SLjavad), removing the daily-cap
   risk. The per-request batch size limit is **not published** anywhere
   found, including OpenRouter's own API reference — handled adaptively, not
   assumed, per §4c.
-- Chunk size is an estimate pending actually running the crawler against the live
-  site — may need tuning after first ingestion run.
-- No offline quality baseline yet — see §12 proposal for a small golden test set.
+- Chunk size is an estimate pending actually running the crawler against the
+  docs — may need tuning after first ingestion run.
+- No offline quality baseline yet — see §13 for the golden test set.
+- **Multi-instance ingestion race** (theoretical, not applicable at MVP
+  scale): `IngestionBackgroundService`'s empty-check-then-run isn't guarded
+  by a distributed lock, so if this ever scaled to multiple concurrent
+  instances on first boot, more than one could start ingesting
+  simultaneously — wasted duplicate work, not a correctness bug (upserts are
+  idempotent). NFR13 keeps this to a single instance for the hackathon, so
+  out of scope; a Redis-based lock would be the fix if it ever mattered.
 - **First-boot latency**: with the seed path (§4) working, this is a
   non-issue — seconds, not minutes. It only resurfaces if `SEED_DOWNLOAD_URL`
   is unset or the download fails and the system falls back to a live crawl
@@ -601,8 +609,8 @@ Details for NFR1–NFR15 not already covered above:
 
 Not committed — add only if time remains, cut without regret otherwise:
 
-- ~~Guided step-by-step UI for how-to pages~~ — subsumed by Practice Mode
-  (§7, FR14): the quiz stepper UI already needed there covers this need, no
+- Guided step-by-step UI for how-to pages — subsumed by Practice Mode (§7,
+  FR14): the quiz stepper UI already needed there covers this need, no
   separate build required.
 - *(Considered and rejected)*: feedback-driven chunk re-ranking — needs usage
   volume a hackathon demo won't generate to be meaningful; not worth the build

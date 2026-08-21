@@ -46,7 +46,7 @@ modes sharing one retrieval index:
   Redis (cache, rate limiting, spend guard).
 - Ingestion: in-process (AngleSharp crawler + chunker + embedder), auto-run
   once on first boot by a hosted background service — no separate worker, no
-  human trigger, no Node.js dependency. See §Non-negotiable 9.
+  human trigger, no Node.js dependency. See Non-negotiable 9 below.
 - All LLM calls (chat, router, embeddings) go through an OpenAI-compatible
   client — provider is config, never a code dependency.
 

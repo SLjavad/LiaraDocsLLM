@@ -184,8 +184,10 @@ hosted service, shared by both the seed path and the live-crawl fallback:
   explanation using the literal prompt in `04-prompts.md` §3 (one call,
   batched across all sub-topic chunks). Shuffle option order after
   generation, store citation. Drop `{"skip": true}` sub-topics (log to
-  `doc_gap_events`, mode `practice`) rather than guessing. Persist the full
-  plan to `practice_exams.steps` in one write.
+  `doc_gap_events`, mode `practice`) rather than guessing — if fewer than
+  `PRACTICE_MIN_STEPS` remain after dropping, return `status:
+  "insufficient_material"` (02-technical-spec §6a) instead of running a
+  short quiz. Persist the full plan to `practice_exams.steps` in one write.
 - `POST /api/practice/start`, `POST /api/practice/{examId}/answer` (pure
   code-level grading, no LLM call — NFR16), `GET /api/practice/{examId}/summary`
   per the JSON contracts in 02-technical-spec §6a.
@@ -202,11 +204,13 @@ app shell + `SessionProvider` + `ModeNav` → API client layer (§3) →
 
 ## Phase 6 — QA & tuning
 
-- Build the golden set (01-architecture §13): ~15–20 prompts — simple,
-  complex/multi-hop, ambiguous/triage-worthy, general-hosting/technical (not
-  literally in the docs), and adversarial guardrail probes covering **both**
-  true refusals (jailbreak/meta/personal) **and** false-positive checks
-  (technical questions that must *not* be refused).
+- Build the golden set (01-architecture §13) as `backend/tests/golden-set.json`
+  (prompt + expected scope/behavior per entry, so it's re-runnable, not just a
+  one-off manual checklist): ~15–20 prompts — simple, complex/multi-hop,
+  ambiguous/triage-worthy, general-hosting/technical (not literally in the
+  docs), and adversarial guardrail probes covering **both** true refusals
+  (jailbreak/meta/personal) **and** false-positive checks (technical
+  questions that must *not* be refused).
 - Run it, tune: groundedness threshold, `MAX_CLARIFYING_ROUNDS`, top-k, router
   prompt wording for the false-positive cases.
 - Verify NFR1/NFR8 (rate limit + spend guard trip correctly), NFR12 (CORS),
@@ -225,8 +229,7 @@ app shell + `SessionProvider` + `ModeNav` → API client layer (§3) →
 ## Phase 7 — Deployment to Liara (01-architecture §10)
 
 - Dockerfiles: backend (.NET runtime image), frontend (Next.js).
-- Provision Liara Postgres (pgvector) and Redis DBaaS — or the self-hosted
-  Postgres+pgvector fallback if Phase 0 found extensions unavailable.
+- Provision Liara Postgres (pgvector) and Redis DBaaS.
 - Set env vars per 02-technical-spec §8 config table on both Liara apps,
   **including `SEED_DOWNLOAD_URL`** from the Phase 2 seed generation step —
   this is what makes first boot fast (seconds) instead of a live crawl
