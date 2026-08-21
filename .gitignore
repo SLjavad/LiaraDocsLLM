@@ -1,0 +1,30 @@
+# Environment / secrets — never commit real values (see specs/02-technical-spec.md §9)
+.env
+.env.local
+.env.*.local
+appsettings.Development.json
+appsettings.*.local.json
+
+# .NET
+bin/
+obj/
+*.user
+.vs/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Ingestion crawl output (regeneratable, can be large)
+ingestion/crawler/crawl-doc-data.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+*.swp
