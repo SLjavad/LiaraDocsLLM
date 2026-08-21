@@ -475,6 +475,35 @@ list_categories() -> { categories: [{ id, labelFa, labelEn }] }
 ```
 Static taxonomy from §2, used by the agent for disambiguating questions.
 
+## 7a. Embedding service — instruction prefixes
+
+`nemotron-3-embed-1b` is an asymmetric retrieval model requiring different
+prefixes for queries vs. documents (01-architecture.md §5, confirmed against
+NVIDIA's own model card). Encapsulate this behind two methods so no call
+site has to remember it:
+
+```
+IEmbeddingService:
+  EmbedDocumentAsync(text: string) -> float[]   // prepends "passage: " if EMBEDDING_USE_PREFIXES
+  EmbedQueryAsync(text: string)    -> float[]    // prepends "query: "   if EMBEDDING_USE_PREFIXES
+```
+
+- `EmbedDocumentAsync` is used by ingestion (§2a) for every chunk.
+  `EmbedQueryAsync` is used by `search_docs`, and by `/api/search`'s
+  sub-query embedding.
+- Prefixing is gated by `EMBEDDING_USE_PREFIXES` (default `true`), **not
+  hardcoded on** — the `text-embedding-3-small` fallback doesn't use this
+  convention, so switching providers means setting this to `false`, a
+  config change, not a code change (consistent with NFR2's black-box model
+  config principle).
+- **Cache key correctness** (§3 `cache:embedding:{hash(text)}`): the hash
+  must be computed over the **final prefixed text**, not the raw input —
+  `"query: deploy a django app"` and `"passage: deploy a django app"` are
+  different embeddings and must not collide in the cache.
+- No extra L2-normalization step needed — the model's output is already
+  normalized (01-architecture.md §5), so pgvector's `vector_cosine_ops`
+  index (§1) is used as-is.
+
 ## 8. Configuration reference
 
 **Black-box rule (NFR2)**: every row below is read from the environment at
@@ -490,7 +519,8 @@ mechanics (`.env.example` vs `.env`, `.gitignore`).
 | `CHAT_MODEL_BASE_URL` / `CHAT_MODEL_API_KEY` / `CHAT_MODEL_NAME` | main synthesis model (OpenAI-compatible) | current candidate: Liara AI Gateway, e.g. `openai/gpt-4.1-mini` — swap freely, code has no opinion on which |
 | `ROUTER_MODEL_NAME` | cheap model for §4 router (can be same provider, smaller/cheaper model) | current candidate: `openai/gpt-4o-mini` |
 | `EMBEDDING_BASE_URL` / `EMBEDDING_API_KEY` / `EMBEDDING_MODEL_NAME` | embedding provider — separate from chat (OpenRouter, not the Liara AI Gateway); OpenAI-compatible endpoint | current candidate: `nvidia/nemotron-3-embed-1b:free` via OpenRouter — #1 on RTEB, benchmarked on Persian (resolves the risk in `01-architecture.md` §5/§11), free. Verify free-tier rate limit sustains bulk ingestion (Phase 2) — fallback `openai/text-embedding-3-small` via Liara AI Gateway is a config-only swap. |
-| `EMBED_DIM` | vector column dimension, fixed at migration time — changing providers/models with a different dim requires a new migration + full re-ingest | `2048` for `nemotron-3-embed-1b`; `1536` for `text-embedding-3-small` |
+| `EMBED_DIM` | vector column dimension, fixed at migration time — changing providers/models with a different dim requires a new migration + full re-ingest | `2048` for `nemotron-3-embed-1b` (verify empirically, §5 risk note); `1536` for `text-embedding-3-small` |
+| `EMBEDDING_USE_PREFIXES` | §7a — `"query: "`/`"passage: "` prefixing, required for `nemotron-3-embed-1b`, wrong for `text-embedding-3-small` | `true` |
 | `OPENROUTER_API_KEY` | separate credential needed even for the free-tier embedding model | — |
 | `POSTGRES_CONNECTION_STRING` | Postgres/pgvector | — |
 | `REDIS_CONNECTION_STRING` | Redis | — |

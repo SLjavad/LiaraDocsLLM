@@ -211,12 +211,31 @@ the exact section, hurting AC1 ("providing appropriate sources") and AC2
   score`. Backend enforces a token budget on what's stuffed into context.
 - **Embedding model**: `nvidia/nemotron-3-embed-1b:free` via OpenRouter —
   #1 on RTEB, explicitly benchmarked on Persian among 34 languages, free,
-  2048-dim (`02-technical-spec.md` §8). Largely resolves the earlier
-  Persian↔English cross-lingual risk (published benchmark, not just an
-  assumption); still worth a quick smoke test on our actual doc chunks in
-  Phase 2 QA as standard practice, and confirming OpenRouter's free-tier rate
-  limit can sustain bulk ingestion — fallback is `openai/text-embedding-3-small`
-  via the Liara AI Gateway if not (§11).
+  2048-dim (verify empirically in Phase 2 — one secondary source suggested
+  4096, which looks like it's describing the 8B variant, not the 1B one we
+  use, but confirm against the actual returned vector length before locking
+  in `EMBED_DIM`). Largely resolves the earlier Persian↔English
+  cross-lingual risk (published benchmark, not just an assumption); still
+  worth a quick smoke test on our actual doc chunks in Phase 2 QA as
+  standard practice, and confirming OpenRouter's free-tier rate limit can
+  sustain bulk ingestion — fallback is `openai/text-embedding-3-small` via
+  the Liara AI Gateway if not (§11).
+- **Instruction prefixes are required for this model** (confirmed on
+  NVIDIA's own model card, not just a blog post) — it's an asymmetric
+  retrieval model trained expecting `"query: "` prepended to search queries
+  and `"passage: "` prepended to indexed document text. Getting this wrong
+  doesn't error, it silently degrades ranking quality — a dangerous class of
+  bug since nothing looks broken. Since OpenRouter's endpoint is a generic
+  OpenAI-compatible wrapper (not NVIDIA's own prefix-aware API), **the
+  prefix must be applied by us**, at every embedding call site, for both
+  ingestion (chunks → `"passage: "`) and retrieval (user queries/sub-queries
+  → `"query: "`). This is model-specific, not universal — the
+  `text-embedding-3-small` fallback does **not** use this convention, so
+  prefix behavior must be gated per-provider, not hardcoded on. Embeddings
+  from this model are already L2-normalized (cosine similarity is correct
+  as-is, matching the existing pgvector `vector_cosine_ops` setup — no
+  extra normalization step needed). Concrete implementation:
+  `02-technical-spec.md` §7a.
 
 ## 6. API contract (modes → endpoints)
 
