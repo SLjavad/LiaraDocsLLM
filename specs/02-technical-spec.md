@@ -25,6 +25,7 @@ lead updates this section; don't self-upgrade mid-build.
 | `Pgvector` | **0.3.2+** | C# `Vector` type for pgvector columns |
 | `Pgvector.EntityFrameworkCore` | **0.3.0** | EF Core integration for `Pgvector` — see §1a for how it's used |
 | `AngleSharp` | **1.5.2** | HTML parsing for the in-process crawler (§4a) — replaces the earlier Node/cheerio reuse plan; targets net10.0 directly |
+| `AWSSDK.S3` | **4.0.16** | S3-compatible client for Liara Object Storage (§2a seed fetch) — confirmed via Liara's own `.NET` Object Storage guide; needs `ForcePathStyle = true` |
 | `Serilog.AspNetCore` | latest stable at build time | structured logging, NFR3 |
 | `StackExchange.Redis` | latest stable at build time | Redis client |
 | `Microsoft.Extensions.Http.Resilience` | latest stable at build time | timeout/retry, NFR4 |
@@ -209,11 +210,17 @@ trigger, seed-first with live-crawl fallback). Concrete mechanics:
      migrations automatically, no manual `dotnet ef database update`.
   2. `await db.DocChunks.CountAsync()` — if `> 0`, return immediately
      (already populated on a prior boot, skip everything below).
-  3. If `0` and `SEED_DOWNLOAD_URL` is set: download it, `pg_restore` into
-     the database, log success/failure. On success, done — skip the crawl
-     below entirely.
-  4. If `0` and no seed configured, or the seed download/restore failed:
-     run the live crawl pipeline below.
+  3. If `0` and `OBJECT_STORAGE_*` (§8) are all set: fetch the seed via
+     `AWSSDK.S3` — `AmazonS3Client` configured with `ServiceURL =
+     OBJECT_STORAGE_API_ENDPOINT` (must include the `https://` scheme) and
+     `ForcePathStyle = true` (required for Liara's S3-compatible endpoint,
+     confirmed against Liara's own `.NET` Object Storage guide), credentials
+     `BasicAWSCredentials(OBJECT_STORAGE_ACCESS_KEY, OBJECT_STORAGE_SECRET_KEY)`.
+     `GetObjectAsync(OBJECT_STORAGE_BUCKET_NAME, SEED_OBJECT_KEY)`, stream to a
+     temp file, `pg_restore` into the database, log success/failure. On
+     success, done — skip the crawl below entirely.
+  4. If `0` and Object Storage isn't fully configured, or the fetch/restore
+     failed: run the live crawl pipeline below.
 - **Enumerate pages**: fetch `DOCS_SITEMAP_URL`
   (default `https://docs.liara.ir/sitemap.xml`; point at
   `http://localhost:3001/sitemap.xml` when generating the seed locally per
@@ -525,15 +532,14 @@ mechanics (`.env.example` vs `.env`, `.gitignore`).
 |---|---|---|
 | `CHAT_MODEL_BASE_URL` / `CHAT_MODEL_API_KEY` / `CHAT_MODEL_NAME` | main synthesis model (OpenAI-compatible) | current candidate: Liara AI Gateway, e.g. `openai/gpt-4.1-mini` — swap freely, code has no opinion on which |
 | `ROUTER_MODEL_NAME` | cheap model for §4 router (can be same provider, smaller/cheaper model) | current candidate: `openai/gpt-4o-mini` |
-| `EMBEDDING_BASE_URL` / `EMBEDDING_API_KEY` / `EMBEDDING_MODEL_NAME` | embedding provider — separate from chat (OpenRouter, not the Liara AI Gateway); OpenAI-compatible endpoint | current candidate: `nvidia/nemotron-3-embed-1b:free` via OpenRouter — #1 on RTEB, benchmarked on Persian (resolves the risk in `01-architecture.md` §5/§11), free. Verify free-tier rate limit sustains bulk ingestion (Phase 2) — fallback `openai/text-embedding-3-small` via Liara AI Gateway is a config-only swap. |
+| `EMBEDDING_BASE_URL` / `EMBEDDING_API_KEY` / `EMBEDDING_MODEL_NAME` | embedding provider — separate from chat (OpenRouter, not the Liara AI Gateway); OpenAI-compatible endpoint. `EMBEDDING_API_KEY` **is** the OpenRouter key — no separate `OPENROUTER_API_KEY` var, nothing else in the system calls OpenRouter directly. | current candidate: `nvidia/nemotron-3-embed-1b:free` via OpenRouter — #1 on RTEB, benchmarked on Persian (resolves the risk in `01-architecture.md` §5/§11), free. Verify free-tier rate limit sustains bulk ingestion (Phase 2) — fallback `openai/text-embedding-3-small` via Liara AI Gateway is a config-only swap. |
 | `EMBED_DIM` | vector column dimension, fixed at migration time — changing providers/models with a different dim requires a new migration + full re-ingest | `2048` for `nemotron-3-embed-1b` (verify empirically, §5 risk note); `1536` for `text-embedding-3-small` |
-| `EMBEDDING_USE_PREFIXES` | §7a — `"query: "`/`"passage: "` prefixing, required for `nemotron-3-embed-1b`, wrong for `text-embedding-3-small` | `true` |
-| `OPENROUTER_API_KEY` | separate credential needed even for the free-tier embedding model | — |
+| `EMBEDDING_USE_PREFIXES` | §7a — `"query: "`/`"passage: "` prefixing, required for `nemotron-3-embed-1b`, wrong for `text-embedding-3-small` | `true` — **must be `true`, never `false`, while using `nemotron-3-embed-1b`; wrong value has no error, just silently worse ranking** |
 | `POSTGRES_CONNECTION_STRING` | Postgres/pgvector | — |
 | `REDIS_CONNECTION_STRING` | Redis | — |
 | `RATE_LIMIT_SESSION_PER_MIN` | NFR1 | `20` |
 | `RATE_LIMIT_IP_PER_MIN` | NFR1 | `60` |
-| `DAILY_SPEND_BUDGET_TOKENS` | NFR8 hard stop | tune to demo budget |
+| `DAILY_SPEND_BUDGET_TOKENS` | NFR8 hard stop | `2000000` — generous safety-net ceiling, not a tight budget; catches a runaway bug/abuse, not meant to ration normal testing |
 | `RETRIEVAL_TOP_K` | §7 | `5` |
 | `RETRIEVAL_GROUNDEDNESS_THRESHOLD` | §7, agent groundedness policy | `0.5` |
 | `MAX_CLARIFYING_ROUNDS` | §5 (also reused by Practice Mode topic-scoping) | `2` |
@@ -541,8 +547,10 @@ mechanics (`.env.example` vs `.env`, `.gitignore`).
 | `MAX_INPUT_CHARS` | NFR9 | `2000` |
 | `CORS_ALLOWED_ORIGIN` | NFR12 | frontend URL |
 | `SUPPORT_CHANNEL_URL` | escalation fallback (01-architecture.md §7) | Liara support link |
-| `SEED_DOWNLOAD_URL` | §2a — pre-built `doc_chunks` dump (Liara Object Storage, preferred; GitHub Release asset as fallback host), tried before falling back to a live crawl | unset locally unless testing the seed path; set in prod once generated |
-| `OBJECT_STORAGE_ACCESS_KEY` / `OBJECT_STORAGE_SECRET_KEY` | only needed if the Liara Object Storage bucket holding the seed is **private** — confirm bucket visibility before Phase 2, changes the download code path (plain HTTPS GET vs. S3-compatible signed request) | unset if bucket is public-read |
+| `OBJECT_STORAGE_API_ENDPOINT` | §2a — `AmazonS3Config.ServiceURL` for Liara Object Storage | **must include the `https://` scheme** (e.g. `https://storage.c2.liara.site`) — bare hostname fails, per Liara's own `.NET` Object Storage guide |
+| `OBJECT_STORAGE_ACCESS_KEY` / `OBJECT_STORAGE_SECRET_KEY` | §2a — S3-compatible credentials (`BasicAWSCredentials`) | — |
+| `OBJECT_STORAGE_BUCKET_NAME` | §2a — bucket holding the seed | — |
+| `SEED_OBJECT_KEY` | §2a — object key (filename) of the seed dump within the bucket, tried before falling back to a live crawl | e.g. `doc_chunks_seed.dump`; unset locally unless testing the seed path |
 | `DOCS_SITEMAP_URL` | §2a ingestion (live-crawl fallback, or point at `localhost:3001` when generating a seed) | `https://docs.liara.ir/sitemap.xml` |
 | `CRAWL_CONCURRENCY` | §2a — bounded worker pool size (live-crawl fallback only) | `5` |
 | `CRAWL_DELAY_MS` | §2a — per-worker delay between its own requests (live-crawl fallback only) | `300` |

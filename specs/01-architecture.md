@@ -111,13 +111,13 @@ Two paths, tried in order, both fully automatic — no human trigger at deploy
 time either way:
 
 1. **Seed load (preferred, fast)**: on startup, if `doc_chunks` is empty and
-   `SEED_DOWNLOAD_URL` is configured, download a pre-built database seed and
-   restore it. Takes seconds, no crawling or embedding at deploy/runtime at
-   all.
-2. **Live crawl (fallback)**: if no seed is configured or the download fails,
-   fall back to crawling `docs.liara.ir` live and embedding from scratch (as
-   originally designed — see below). Keeps the system self-healing/
-   regenerable without extra tooling, just slower.
+   Liara Object Storage is configured (§8), fetch a pre-built database seed
+   via `AWSSDK.S3` and restore it. Takes seconds, no crawling or embedding at
+   deploy/runtime at all.
+2. **Live crawl (fallback)**: if Object Storage isn't configured or the
+   fetch fails, fall back to crawling `docs.liara.ir` live and embedding
+   from scratch (as originally designed — see below). Keeps the system
+   self-healing/regenerable without extra tooling, just slower.
 
 Either way this is one hosted background service
 (`IngestionBackgroundService`, an `IHostedService`) inside the same process
@@ -139,15 +139,11 @@ that serves the API (§3) — no separate worker to deploy.
    — a plain-text dump of a few thousand 2048-dim vectors would be large)
    scoped to the `doc_chunks` table.
 5. **Never committed to git.** Upload the dump to **Liara Object Storage**
-   (SLjavad is setting this up — preferred, stays within Liara's own
-   services) — the app downloads it via `SEED_DOWNLOAD_URL` at startup. If
-   the bucket is public-read, this is a plain HTTPS GET, same as any static
-   file URL; if private, it needs a signed URL or `OBJECT_STORAGE_ACCESS_KEY`/
-   `OBJECT_STORAGE_SECRET_KEY` and an S3-compatible client instead of a raw
-   download — **confirm which before Phase 2**, it changes the download code
-   path. (A GitHub Release asset on this repo remains a fallback option if
-   Object Storage setup isn't ready in time — same `SEED_DOWNLOAD_URL`
-   mechanism either way, just a different host.)
+   (set up — bucket, endpoint, and S3-compatible credentials confirmed) —
+   the app fetches it at startup via `AWSSDK.S3` (`GetObjectAsync` with
+   `OBJECT_STORAGE_BUCKET_NAME` + `SEED_OBJECT_KEY`), not a plain URL
+   download — see `02-technical-spec.md` §2a for the exact client config
+   (`ServiceURL` needs the `https://` scheme, `ForcePathStyle = true`).
 6. **OpenRouter free-tier request budget**: batch size is handled
    defensively, not hardcoded (§4c) — exact request count depends on what
    the API actually accepts, so treat "how many requests" as "however many
@@ -597,9 +593,9 @@ Details for NFR1–NFR15 not already covered above:
   idempotent). NFR13 keeps this to a single instance for the hackathon, so
   out of scope; a Redis-based lock would be the fix if it ever mattered.
 - **First-boot latency**: with the seed path (§4) working, this is a
-  non-issue — seconds, not minutes. It only resurfaces if `SEED_DOWNLOAD_URL`
-  is unset or the download fails and the system falls back to a live crawl
-  (~5–20 min estimate). Deploy with the seed configured and confirmed
+  non-issue — seconds, not minutes. It only resurfaces if Object Storage
+  isn't configured or the fetch fails and the system falls back to a live
+  crawl (~5–20 min estimate). Deploy with the seed configured and confirmed
   working well before a live demo either way. If the fallback crawl's
   concurrency setting turns out too aggressive for `docs.liara.ir`, dial
   `CRAWL_CONCURRENCY`/`CRAWL_DELAY_MS` back — a config change, not a

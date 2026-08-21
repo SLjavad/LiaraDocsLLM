@@ -15,11 +15,12 @@ real values swapped in later:
   `openai/gpt-4o-mini` via the Liara AI Gateway (OpenAI-wire-compatible per
   01-architecture.md §3) — swap for the real choice whenever decided.
 - Embedding model: `nvidia/nemotron-3-embed-1b:free` via OpenRouter — #1 on
-  RTEB, explicitly Persian-benchmarked, free — `EMBED_DIM=2048`. Needs its own
-  `OPENROUTER_API_KEY` (separate from the Liara Gateway key). Locked in now so
-  DB migration work isn't blocked; verify free-tier rate limits handle bulk
-  ingestion in Phase 2 — fallback is `openai/text-embedding-3-small` via the
-  Liara AI Gateway (`EMBED_DIM=1536`), a config-only swap either way.
+  RTEB, explicitly Persian-benchmarked, free — `EMBED_DIM=2048`. Needs its
+  own `EMBEDDING_API_KEY` (an OpenRouter key, separate from the chat
+  provider's key). Locked in now so DB migration work isn't blocked; verify
+  free-tier rate limits handle bulk ingestion in Phase 2 — fallback is
+  `openai/text-embedding-3-small` via the Liara AI Gateway (`EMBED_DIM=1536`),
+  a config-only swap either way.
 - ~~$10 lifetime credits on the OpenRouter account~~ — **being purchased**
   (per SLjavad); bumps the free-tier daily request cap from 50 to 1,000
   (01-architecture.md §11).
@@ -78,8 +79,9 @@ hosted service, shared by both the seed path and the live-crawl fallback:
 1. **`IngestionBackgroundService`** (`BackgroundService`, registered in
    `Api`'s `Program.cs`): on startup, apply migrations
    (`Database.MigrateAsync()`), check `doc_chunks` row count — skip if
-   already populated; if empty, try the seed download (`SEED_DOWNLOAD_URL`)
-   first, fall back to the live crawl only if that's unset or fails
+   already populated; if empty, try fetching the seed from Liara Object
+   Storage via `AWSSDK.S3` first, fall back to the live crawl only if
+   `OBJECT_STORAGE_*` isn't fully configured or the fetch fails
    (02-technical-spec §2a startup sequence).
 2. **Crawl** (AngleSharp): fetch `DOCS_SITEMAP_URL`, filter by taxonomy path
    prefixes, fetch+parse each page (`h1` title, `h2`–`h6` section
@@ -106,13 +108,13 @@ hosted service, shared by both the seed path and the live-crawl fallback:
      absorbs iterative re-runs while tuning chunking regardless of the
      actual (unverified) batch size — see 01-architecture §11.
    - `pg_dump --format=custom` scoped to `doc_chunks`, upload to **Liara
-     Object Storage** (never committed to git — dumps of a few thousand
-     2048-dim vectors are large and don't belong in git history). Confirm
-     whether the bucket is public-read (plain `SEED_DOWNLOAD_URL`) or
-     private (needs `OBJECT_STORAGE_ACCESS_KEY`/`_SECRET_KEY`,
-     02-technical-spec §8) before implementing the download side.
-   - Set `SEED_DOWNLOAD_URL` (and the access keys if private) wherever the
-     app runs (local `.env` and Liara env vars, Phase 7).
+     Object Storage** as `SEED_OBJECT_KEY` (e.g. `doc_chunks_seed.dump`) —
+     never committed to git, dumps of a few thousand 2048-dim vectors are
+     large and don't belong in git history. Bucket/endpoint/credentials are
+     already set up (02-technical-spec §8) — S3-compatible via `AWSSDK.S3`,
+     not a plain URL download.
+   - Set `OBJECT_STORAGE_*` and `SEED_OBJECT_KEY` wherever the app runs
+     (local `.env` and Liara env vars, Phase 7).
 5. **QA pass** (01-architecture §4 QA step + §11 risk):
    - **Verify the actual returned embedding dimension is 2048** before
      locking in `EMBED_DIM` at migration time (one source suggested 4096,
@@ -231,20 +233,21 @@ app shell + `SessionProvider` + `ModeNav` → API client layer (§3) →
 - Dockerfiles: backend (.NET runtime image), frontend (Next.js).
 - Provision Liara Postgres (pgvector) and Redis DBaaS.
 - Set env vars per 02-technical-spec §8 config table on both Liara apps,
-  **including `SEED_DOWNLOAD_URL`** from the Phase 2 seed generation step —
-  this is what makes first boot fast (seconds) instead of a live crawl
-  (~5–20 min). No manual ingestion step either way — it's automatic.
+  **including `OBJECT_STORAGE_*` and `SEED_OBJECT_KEY`** from the Phase 2
+  seed generation step — this is what makes first boot fast (seconds)
+  instead of a live crawl (~5–20 min). No manual ingestion step either
+  way — it's automatic.
 - Confirm the seed path actually ran (check startup logs, §2a
-  observability) rather than assuming it worked — if `SEED_DOWNLOAD_URL` is
-  wrong/unreachable, it silently falls back to the slow live crawl instead
-  of failing loudly, so check.
+  observability) rather than assuming it worked — if the Object Storage
+  config is wrong/unreachable, it silently falls back to the slow live
+  crawl instead of failing loudly, so check.
 - Re-run the golden set against the deployed instance after confirming
   ingestion has completed either way.
 
 ## Phase 8 — Demo prep
 
 **Confirm the seed path worked before treating a deploy as demo-ready** —
-with `SEED_DOWNLOAD_URL` configured and confirmed (Phase 7), first boot is
+with Object Storage configured and confirmed (Phase 7), first boot is
 seconds, not minutes. If it silently fell back to a live crawl instead
 (check logs), budget the ~5–20 min it takes and redeploy with more lead
 time rather than demoing against a partially-ingested index.
