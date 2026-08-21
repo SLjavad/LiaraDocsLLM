@@ -133,24 +133,28 @@ that serves the API (§3) — no separate worker to deploy.
 2. Point the same AngleSharp crawler (§4b) at `http://localhost:3001`
    instead of `docs.liara.ir`. No concurrency/delay tuning needed against
    our own localhost — no external site to be polite to.
-3. Chunk + embed (batched, 96 texts per request — the documented OpenRouter
-   max for `nemotron-3-embed-1b:free`) + upsert into a local `doc_chunks`
-   table, same as the live-crawl path.
+3. Chunk + embed + upsert into a local `doc_chunks` table, same as the
+   live-crawl path — batching mechanics in §4c.
 4. Export: `pg_dump --format=custom` (compressed binary, not plain SQL text
    — a plain-text dump of a few thousand 2048-dim vectors would be large)
    scoped to the `doc_chunks` table.
-5. **Never committed to git.** Upload the dump as a **GitHub Release asset**
-   on this repo (zero new infrastructure/credentials, no git size limits) —
-   the app downloads it via `SEED_DOWNLOAD_URL` at startup. (Alternative:
-   Liara Object Storage, if keeping this entirely within Liara's own
-   services is preferred over a GitHub asset — swap is a config change.)
-6. **OpenRouter free-tier request budget**: ~3–6k chunks ÷ 96/request ≈
-   **32–63 requests total** for a full run — trivially under the 20/min cap,
-   but the **50/day-without-credits** cap can bite across multiple re-runs
-   while iterating on chunking. Put $10 in lifetime credits on the account
-   before serious Phase 2 work — bumps the daily cap to 1,000, which
-   comfortably absorbs repeated dev-time runs. (Full numbers: `03-plan.md`
-   Phase 2.)
+5. **Never committed to git.** Upload the dump to **Liara Object Storage**
+   (SLjavad is setting this up — preferred, stays within Liara's own
+   services) — the app downloads it via `SEED_DOWNLOAD_URL` at startup. If
+   the bucket is public-read, this is a plain HTTPS GET, same as any static
+   file URL; if private, it needs a signed URL or `OBJECT_STORAGE_ACCESS_KEY`/
+   `OBJECT_STORAGE_SECRET_KEY` and an S3-compatible client instead of a raw
+   download — **confirm which before Phase 2**, it changes the download code
+   path. (A GitHub Release asset on this repo remains a fallback option if
+   Object Storage setup isn't ready in time — same `SEED_DOWNLOAD_URL`
+   mechanism either way, just a different host.)
+6. **OpenRouter free-tier request budget**: batch size is handled
+   defensively, not hardcoded (§4c) — exact request count depends on what
+   the API actually accepts, so treat "how many requests" as "however many
+   it takes," not a precomputed number. What's certain: **$10 in lifetime
+   credits is already being purchased** (bumps the daily cap from 50 to
+   1,000 requests — see §11 risk on the exact numbers), which removes the
+   daily-cap risk regardless of the real batch size.
 
 ### 4b. The crawl+chunk+embed pipeline itself (shared by both paths)
 
@@ -165,8 +169,20 @@ that serves the API (§3) — no separate worker to deploy.
    normal path).
 2. Chunk: one chunk per crawled section (~200–800 tokens); merge tiny
    adjacent sections, split oversized ones on paragraph boundaries.
-3. Embed each chunk, batched at 96 texts/request (§4a).
+3. Embed each chunk, batched per §4c.
 4. Upsert into `doc_chunks` keyed by `(url, anchor)`, `content_hash`-gated.
+
+### 4c. Embedding batch size — adaptive, not hardcoded
+
+OpenRouter's own API reference for the embeddings endpoint doesn't publish a
+batch-size limit (checked directly, not assumed), and nothing model-specific
+was found for `nemotron-3-embed-1b`. Don't hardcode a guessed number — start
+with a conservative batch size (`EMBED_BATCH_SIZE`, default 20) and handle
+it defensively: if the API rejects a batch (a 4xx error plausibly related to
+size — request too large, too many inputs, etc.), split the batch in half
+and retry each half, down to a minimum of 1. This discovers the real limit
+empirically instead of trusting an unverified figure, and keeps working even
+if the limit turns out to be provider-specific or changes later.
 
 **Graceful degradation while ingesting** (fallback path only — the seed path
 is fast enough this rarely matters): if `search_docs` runs against an
@@ -421,7 +437,7 @@ Full request/response schemas go in `02-technical-spec.md`.
 |----|---|---|
 | NFR1 | Redis-backed rate limiting, dual-keyed (session id + IP) | 4 |
 | NFR2 | Fully black-box model config: model name, base URL, and API key are env-var-only, with **no in-code fallback/default** — app fails fast at startup if unset. Never sent to frontend, never committed to the repo. | 4 |
-| NFR3 | Structured logs (Serilog), correlation id, per-request token-usage logging, `/health` | 4 |
+| NFR3 | Structured logging & observability (see detail below — this is a first-class part of the system, not an afterthought) | 4 |
 | NFR4 | Timeout + bounded retry on all LLM/embedding calls; graceful failure message, never a raw error | 4 |
 | NFR5 | Stateless backend — horizontally scalable | 4 |
 | NFR6 | Response + embedding caching (Redis) | 6 |
@@ -457,6 +473,51 @@ Details for NFR1–NFR15 not already covered above:
   is what makes local dev and the Liara deployment able to run different
   models/providers with no code change — see `02-technical-spec.md` §8 for the
   full var list and the git-hygiene rules around it.
+- **NFR3 logging & observability** — treated as a real system component, not
+  a bolted-on afterthought, since it's the only way to know something broke
+  once this is deployed and unattended:
+  - **Framework**: Serilog, structured logging throughout — named properties
+    (`{SessionId}`, `{CorrelationId}`, `{Mode}`, etc.), never bare string
+    interpolation into the log message. Console sink (Liara captures
+    container stdout); structured/JSON output so logs stay machine-parseable
+    if anything ever needs to query them.
+  - **Correlation ID**: assigned per HTTP request (reuse an incoming
+    `X-Correlation-Id` if the client sent one, generate one otherwise),
+    attached to every log line for that request via Serilog's
+    `LogContext`, and returned in the response headers — so a specific
+    failure a user hits can be traced through the logs from the outside.
+  - **What gets logged, at what level**:
+    - *Information*: request start/end per endpoint, router scope decision,
+      retrieval top score + chunk count, triage round transitions,
+      Practice Mode plan/answer events, ingestion progress and completion
+      (which path — seed vs. live crawl — chunk count, duration).
+    - *Warning*: any retry attempt (NFR4), low-confidence retrieval below
+      threshold (in addition to the `doc_gap_events` DB row), rate-limit
+      trips (NFR1), spend-guard trips (NFR8), seed download/restore
+      failure before falling back to live crawl.
+    - *Error*: unhandled exceptions, an LLM/embedding call that exhausted
+      its retries, migration failure.
+    - *Fatal*: startup failure that prevents the app from serving at all
+      (e.g. missing required config, NFR2).
+  - **Global exception-handling middleware**: catches unhandled exceptions
+    app-wide, logs them at Error with full context (correlation id,
+    request path, stack trace) — but **never leaks that detail to the
+    client**: the HTTP response stays a generic safe error, same principle
+    as NFR15's output scrub. One bad request logs and returns an error; it
+    does not crash the process.
+  - **Token-usage logging** (cost visibility, ties to AC6): every LLM call
+    (chat, router, embedding) logs `{Model, Endpoint/Mode, PromptTokens,
+    CompletionTokens, TotalTokens, CorrelationId}` as structured properties
+    — this is what makes NFR8's spend guard auditable after the fact, not
+    just a silent counter.
+  - **Never log secrets**: API keys must never appear in a log line, even
+    incidentally via a raw exception message or a dumped request object
+    that happens to include an auth header — sanitize before logging
+    anything that touches an HTTP client's request/response objects.
+  - **`/health` reports ingestion status**: `{ "status": "ok", "ingestion":
+    "pending" | "complete" }` — a one-field addition to the existing health
+    endpoint that answers "is the app actually ready to answer things" at a
+    glance, without needing a separate endpoint.
 
 ## 10. Deployment (target: Liara)
 
@@ -481,6 +542,13 @@ Details for NFR1–NFR15 not already covered above:
   and OpenRouter's free tier may rate-limit bulk ingestion — verify early in
   Phase 2; fallback is `text-embedding-3-small` via the Liara AI Gateway
   (config-only change, no logic change).
+- **OpenRouter free-tier rate limits** (verified directly against
+  OpenRouter's docs, not assumed): 20 requests/minute always; 50/day with no
+  prior credits, 1,000/day once the account has $10+ in lifetime credits
+  purchased. $10 is being purchased (per SLjavad) — removes the daily-cap
+  risk. The per-request batch size limit is **not published** anywhere
+  found, including OpenRouter's own API reference — handled adaptively, not
+  assumed, per §4c.
 - Chunk size is an estimate pending actually running the crawler against the live
   site — may need tuning after first ingestion run.
 - No offline quality baseline yet — see §12 proposal for a small golden test set.

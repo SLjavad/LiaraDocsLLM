@@ -231,10 +231,11 @@ trigger, seed-first with live-crawl fallback). Concrete mechanics:
   82+ minutes). Against **localhost** (seed generation), concurrency/delay
   tuning doesn't matter — no external site to be polite to.
 - **Chunk/embed/upsert**: as in §1 — one chunk per section, `content_hash =
-  sha256(body)`, embed in batches of **96 texts per request** (the
-  documented max for `nemotron-3-embed-1b:free` on OpenRouter — see
-  `01-architecture.md` §4a for the resulting request-count math), upsert
-  into `doc_chunks` keyed on `(url, anchor)`.
+  sha256(body)`, embed in batches starting at `EMBED_BATCH_SIZE` (default
+  20), **halving and retrying on a size-related 4xx error** rather than
+  trusting a hardcoded max — OpenRouter doesn't publish one for this
+  endpoint (01-architecture.md §4c). Upsert into `doc_chunks` keyed on
+  `(url, anchor)`.
 - **Failure handling**: a single page failure (timeout, 404, transient
   error) is logged and skipped — it does not abort the whole run. The
   pipeline should finish with whatever it could reach, consistent with the
@@ -316,6 +317,10 @@ Session identity: client-generated UUID (`X-Session-Id` header), created on
 first frontend load, persisted in `localStorage`. Required on `/api/chat` and
 `/api/feedback`; optional on `/api/search` (only used there for rate limiting
 and cache namespacing, no conversation state).
+
+Every response also carries `X-Correlation-Id` (echoes an incoming one if the
+client sent it, otherwise generated) — used to tie a specific failure back to
+its log lines, per NFR3 (01-architecture.md §9).
 
 ### `POST /api/search`
 
@@ -445,7 +450,10 @@ a signal worth capturing.
 
 ### `GET /health`
 
-→ `{ "status": "ok" }`. Liveness only (no downstream dependency checks needed
+→ `{ "status": "ok", "ingestion": "pending" | "complete" }` (NFR3) — the
+`ingestion` field reflects whether `doc_chunks` is populated yet, so it's
+possible to tell at a glance whether the app is fully functional or still
+mid-first-boot. Liveness only otherwise (no downstream dependency checks needed
 for MVP).
 
 ## 7. Agent tools (Microsoft Agent Framework)
@@ -496,10 +504,12 @@ mechanics (`.env.example` vs `.env`, `.gitignore`).
 | `MAX_INPUT_CHARS` | NFR9 | `2000` |
 | `CORS_ALLOWED_ORIGIN` | NFR12 | frontend URL |
 | `SUPPORT_CHANNEL_URL` | escalation fallback (01-architecture.md §7) | Liara support link |
-| `SEED_DOWNLOAD_URL` | §2a — pre-built `doc_chunks` dump (GitHub Release asset), tried before falling back to a live crawl | unset locally unless testing the seed path; set in prod once generated |
+| `SEED_DOWNLOAD_URL` | §2a — pre-built `doc_chunks` dump (Liara Object Storage, preferred; GitHub Release asset as fallback host), tried before falling back to a live crawl | unset locally unless testing the seed path; set in prod once generated |
+| `OBJECT_STORAGE_ACCESS_KEY` / `OBJECT_STORAGE_SECRET_KEY` | only needed if the Liara Object Storage bucket holding the seed is **private** — confirm bucket visibility before Phase 2, changes the download code path (plain HTTPS GET vs. S3-compatible signed request) | unset if bucket is public-read |
 | `DOCS_SITEMAP_URL` | §2a ingestion (live-crawl fallback, or point at `localhost:3001` when generating a seed) | `https://docs.liara.ir/sitemap.xml` |
 | `CRAWL_CONCURRENCY` | §2a — bounded worker pool size (live-crawl fallback only) | `5` |
 | `CRAWL_DELAY_MS` | §2a — per-worker delay between its own requests (live-crawl fallback only) | `300` |
+| `EMBED_BATCH_SIZE` | §2a/§4c — starting batch size for embedding calls, halved and retried on a size-related error rather than trusting an unverified max | `20` |
 
 ## 9. Git hygiene & config loading
 

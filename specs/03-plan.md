@@ -20,8 +20,13 @@ real values swapped in later:
   DB migration work isn't blocked; verify free-tier rate limits handle bulk
   ingestion in Phase 2 — fallback is `openai/text-embedding-3-small` via the
   Liara AI Gateway (`EMBED_DIM=1536`), a config-only swap either way.
+- ~~$10 lifetime credits on the OpenRouter account~~ — **being purchased**
+  (per SLjavad); bumps the free-tier daily request cap from 50 to 1,000
+  (01-architecture.md §11).
 - ~~Liara account access to verify the `pgvector` extension~~ — **confirmed
   available on Liara's managed Postgres.**
+- ~~Liara Object Storage for the ingestion seed file~~ — SLjavad is setting
+  this up (01-architecture.md §4a).
 - Still needed before Phase 7 (deployment) at the latest: real API key(s) for
   whichever model(s) are finalized, and the Liara support channel URL for the
   escalation fallback (`SUPPORT_CHANNEL_URL`).
@@ -88,23 +93,26 @@ hosted service, shared by both the seed path and the live-crawl fallback:
      `CRAWL_DELAY_MS`) — **not** the original indexer's serial 4.5s delay
      (82+ minutes for 1100 pages).
 3. **Chunk/embed/upsert**: as in `02-technical-spec.md` §1 — one chunk per
-   section, embed in batches of **96 texts/request** (OpenRouter's
-   documented max for `nemotron-3-embed-1b:free`), upsert into `doc_chunks`
-   keyed by `(url, anchor)` with `content_hash` idempotency.
+   section, embed starting at `EMBED_BATCH_SIZE` (default 20), halving and
+   retrying on a size-related API error rather than trusting a hardcoded
+   max (OpenRouter doesn't publish one for this endpoint — 01-architecture
+   §4c). Upsert into `doc_chunks` keyed by `(url, anchor)` with
+   `content_hash` idempotency.
 4. **Generate and publish the seed** (dev-time, once, by us — not part of
    any automated deploy):
    - Run the pipeline locally against `localhost:3001` (step 2).
-   - **Before this**: put $10 in lifetime OpenRouter credits on the account
-     used for embedding — with ~3–6k chunks ÷ 96/request ≈ **32–63 requests
-     total**, a single run fits easily under the 20/min cap, but the
-     **50/day-without-credits** cap can get exhausted across a few
-     iterative re-runs while tuning chunking; $10 in credits bumps that to
-     1,000/day and removes the friction entirely (01-architecture §4a).
-   - `pg_dump --format=custom` scoped to `doc_chunks`, upload as a **GitHub
-     Release asset** on this repo (never committed to git — dumps of a few
-     thousand 2048-dim vectors are large and don't belong in git history).
-   - Set `SEED_DOWNLOAD_URL` to that asset's URL wherever the app runs
-     (local `.env` and Liara env vars, Phase 7).
+   - $10 in lifetime OpenRouter credits is being purchased (per SLjavad) —
+     bumps the daily request cap from 50 to 1,000, which comfortably
+     absorbs iterative re-runs while tuning chunking regardless of the
+     actual (unverified) batch size — see 01-architecture §11.
+   - `pg_dump --format=custom` scoped to `doc_chunks`, upload to **Liara
+     Object Storage** (never committed to git — dumps of a few thousand
+     2048-dim vectors are large and don't belong in git history). Confirm
+     whether the bucket is public-read (plain `SEED_DOWNLOAD_URL`) or
+     private (needs `OBJECT_STORAGE_ACCESS_KEY`/`_SECRET_KEY`,
+     02-technical-spec §8) before implementing the download side.
+   - Set `SEED_DOWNLOAD_URL` (and the access keys if private) wherever the
+     app runs (local `.env` and Liara env vars, Phase 7).
 5. **QA pass** (01-architecture §4 QA step + §11 risk):
    - Spot-check a sample of chunks — do `anchor` links resolve to the right
      in-page section?

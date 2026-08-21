@@ -88,6 +88,15 @@ looking shortcut. Don't.
    crawl/chunk/embed pipeline itself if empty, then never again once
    populated. No separate console app, no "run this script first" step in
    any README. See `02-technical-spec.md` §2a.
+10. **Never assert an unverified external limit/spec as fact.** If a
+    provider's rate limit, batch size, or API behavior isn't confirmed from
+    their actual docs, code defensively (adaptive batch-splitting on error,
+    per §4c) instead of hardcoding a guessed number.
+11. **Logging is a first-class part of this system, not an afterthought**
+    (NFR3, `01-architecture.md` §9): structured Serilog logging with a
+    correlation id per request, the log-level guidance there followed
+    consistently, secrets never logged, and a global exception handler that
+    logs full context but never leaks it to the client.
 
 ## Repo layout (target — see `03-plan.md` Phase 1 for the full scaffold)
 
