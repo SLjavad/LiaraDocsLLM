@@ -66,43 +66,60 @@ LiaraChallenge/
 
 ## Phase 2 — Ingestion background service (01-architecture §4, 02-technical-spec §1–2a)
 
-Fully automatic — no manual crawler run, no separate worker to invoke. Build
-`backend/src/Ingestion/` and wire it as a hosted service:
+Fully automatic either way — no manual crawler run, no separate worker to
+invoke at deploy time. Build `backend/src/Ingestion/` and wire it as a
+hosted service, shared by both the seed path and the live-crawl fallback:
 
 1. **`IngestionBackgroundService`** (`BackgroundService`, registered in
    `Api`'s `Program.cs`): on startup, apply migrations
-   (`Database.MigrateAsync()`), then check `doc_chunks` row count — skip if
-   already populated, otherwise run steps 2–4 in the background (API keeps
-   serving requests immediately, per 02-technical-spec §2a).
+   (`Database.MigrateAsync()`), check `doc_chunks` row count — skip if
+   already populated; if empty, try the seed download (`SEED_DOWNLOAD_URL`)
+   first, fall back to the live crawl only if that's unset or fails
+   (02-technical-spec §2a startup sequence).
 2. **Crawl** (AngleSharp): fetch `DOCS_SITEMAP_URL`, filter by taxonomy path
    prefixes, fetch+parse each page (`h1` title, `h2`–`h6` section
    boundaries, anchor from heading/adjacent element `id`), category from URL
-   path segment. Bounded concurrency (`CRAWL_CONCURRENCY`, `CRAWL_DELAY_MS`)
-   — **not** the original indexer's serial 4.5s delay, which would make this
-   take 80+ minutes.
+   path segment. Same code path serves both uses:
+   - **Seed generation (dev-time, run by us)**: `docs` repo running locally
+     via `npm run dev` (port 3001), `DOCS_SITEMAP_URL` pointed at
+     `localhost:3001` — no concurrency/delay tuning needed.
+   - **Live-crawl fallback (production, rare)**: `DOCS_SITEMAP_URL` at
+     `docs.liara.ir`, bounded concurrency (`CRAWL_CONCURRENCY`,
+     `CRAWL_DELAY_MS`) — **not** the original indexer's serial 4.5s delay
+     (82+ minutes for 1100 pages).
 3. **Chunk/embed/upsert**: as in `02-technical-spec.md` §1 — one chunk per
-   section, batch-embed, upsert into `doc_chunks` keyed by `(url, anchor)`
-   with `content_hash` idempotency.
-4. **QA pass** (01-architecture §4 QA step + §11 risk) — do this on the
-   first real run against the live site, before trusting the auto-trigger in
-   other environments:
+   section, embed in batches of **96 texts/request** (OpenRouter's
+   documented max for `nemotron-3-embed-1b:free`), upsert into `doc_chunks`
+   keyed by `(url, anchor)` with `content_hash` idempotency.
+4. **Generate and publish the seed** (dev-time, once, by us — not part of
+   any automated deploy):
+   - Run the pipeline locally against `localhost:3001` (step 2).
+   - **Before this**: put $10 in lifetime OpenRouter credits on the account
+     used for embedding — with ~3–6k chunks ÷ 96/request ≈ **32–63 requests
+     total**, a single run fits easily under the 20/min cap, but the
+     **50/day-without-credits** cap can get exhausted across a few
+     iterative re-runs while tuning chunking; $10 in credits bumps that to
+     1,000/day and removes the friction entirely (01-architecture §4a).
+   - `pg_dump --format=custom` scoped to `doc_chunks`, upload as a **GitHub
+     Release asset** on this repo (never committed to git — dumps of a few
+     thousand 2048-dim vectors are large and don't belong in git history).
+   - Set `SEED_DOWNLOAD_URL` to that asset's URL wherever the app runs
+     (local `.env` and Liara env vars, Phase 7).
+5. **QA pass** (01-architecture §4 QA step + §11 risk):
    - Spot-check a sample of chunks — do `anchor` links resolve to the right
      in-page section?
-   - **Rate-limit check**: confirm OpenRouter's free-tier `nemotron-3-embed-1b`
-     sustains the full ~3–6k chunk batch without excessive throttling. If
-     not, switch `EMBEDDING_MODEL_NAME`/`EMBEDDING_BASE_URL`/`EMBED_DIM` to
-     the `text-embedding-3-small` fallback (01-architecture §11) — config-only
-     change.
    - Cross-lingual smoke test: run a handful of English queries against the
-     (mostly Persian) corpus and check top results are sensible — the model's
-     published Persian benchmark makes this a confirmation pass, not a
-     from-scratch risk.
+     (mostly Persian) corpus and check top results are sensible — the
+     model's published Persian benchmark makes this a confirmation pass,
+     not a from-scratch risk.
    - Sanity-check chunk count/size distribution against the ~200–800 token
      estimate; tune chunking if far off.
-   - Time the full run once — confirm it lands in the ~5–20 min estimate
-     (01-architecture §4); if `docs.liara.ir` pushes back under the default
-     concurrency (errors, throttling), dial `CRAWL_CONCURRENCY`/
-     `CRAWL_DELAY_MS` down rather than pushing through.
+   - Confirm the seed path actually loads correctly on a fresh empty DB
+     (`pg_restore` succeeds, `doc_chunks` populated, `search_docs` returns
+     sensible results) before relying on it for Phase 7 deployment.
+   - Time one live-crawl fallback run too (even though it's not the primary
+     path) — confirm it lands in the ~5–20 min estimate and doesn't error
+     out against `docs.liara.ir`'s actual response behavior.
 
 ## Phase 3 — Retrieval + Router + `/api/search`
 
@@ -189,19 +206,24 @@ app shell + `SessionProvider` + `ModeNav` → API client layer (§3) →
 - Dockerfiles: backend (.NET runtime image), frontend (Next.js).
 - Provision Liara Postgres (pgvector) and Redis DBaaS — or the self-hosted
   Postgres+pgvector fallback if Phase 0 found extensions unavailable.
-- Set env vars per 02-technical-spec §8 config table on both Liara apps.
-- No manual ingestion step here — it runs automatically on the backend's
-  first boot against the fresh (empty) production DB. Just wait for it
-  (~5–20 min, 01-architecture §4) before treating the deployment as done.
-- Re-run the golden set against the deployed instance **after** confirming
-  ingestion has completed (check logs for the completion line, §2a) — not
-  immediately after deploy.
+- Set env vars per 02-technical-spec §8 config table on both Liara apps,
+  **including `SEED_DOWNLOAD_URL`** from the Phase 2 seed generation step —
+  this is what makes first boot fast (seconds) instead of a live crawl
+  (~5–20 min). No manual ingestion step either way — it's automatic.
+- Confirm the seed path actually ran (check startup logs, §2a
+  observability) rather than assuming it worked — if `SEED_DOWNLOAD_URL` is
+  wrong/unreachable, it silently falls back to the slow live crawl instead
+  of failing loudly, so check.
+- Re-run the golden set against the deployed instance after confirming
+  ingestion has completed either way.
 
 ## Phase 8 — Demo prep
 
-**Deploy well ahead of the demo slot, not minutes before** — first-boot
-ingestion takes ~5–20 min in the background (01-architecture §4/§11), and
-retrieval degrades to "still building my knowledge base" until it finishes.
+**Confirm the seed path worked before treating a deploy as demo-ready** —
+with `SEED_DOWNLOAD_URL` configured and confirmed (Phase 7), first boot is
+seconds, not minutes. If it silently fell back to a live crawl instead
+(check logs), budget the ~5–20 min it takes and redeploy with more lead
+time rather than demoing against a partially-ingested index.
 
 Script a run-through covering, in order: a simple question, a complex
 multi-hop question, an ambiguous question that triggers triage, a general

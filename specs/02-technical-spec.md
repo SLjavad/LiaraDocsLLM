@@ -198,38 +198,49 @@ taxonomy.
 ## 2a. Ingestion background service
 
 Implements `01-architecture.md` §4 (auto-triggered, single-process, no human
-trigger). Concrete mechanics:
+trigger, seed-first with live-crawl fallback). Concrete mechanics:
 
 - **Registration**: `IngestionBackgroundService : BackgroundService`,
   registered with `builder.Services.AddHostedService<IngestionBackgroundService>()`
   in the API's `Program.cs`. Runs once in `ExecuteAsync` at startup, not on a
   timer.
-- **Startup sequence**: (1) `await db.Database.MigrateAsync()` — apply any
-  pending EF Core migrations automatically, no manual `dotnet ef database
-  update`; (2) `await db.DocChunks.CountAsync()` — if `> 0`, return
-  immediately (already ingested on a prior boot, skip); if `0`, run the
-  pipeline below.
+- **Startup sequence**:
+  1. `await db.Database.MigrateAsync()` — apply any pending EF Core
+     migrations automatically, no manual `dotnet ef database update`.
+  2. `await db.DocChunks.CountAsync()` — if `> 0`, return immediately
+     (already populated on a prior boot, skip everything below).
+  3. If `0` and `SEED_DOWNLOAD_URL` is set: download it, `pg_restore` into
+     the database, log success/failure. On success, done — skip the crawl
+     below entirely.
+  4. If `0` and no seed configured, or the seed download/restore failed:
+     run the live crawl pipeline below.
 - **Enumerate pages**: fetch `DOCS_SITEMAP_URL`
-  (`https://docs.liara.ir/sitemap.xml`), filter URLs by the path prefixes in
-  §2's taxonomy table (same filtering Liara's own indexer does in
-  `getUrl.js`).
+  (default `https://docs.liara.ir/sitemap.xml`; point at
+  `http://localhost:3001/sitemap.xml` when generating the seed locally per
+  `01-architecture.md` §4a), filter URLs by the path prefixes in §2's
+  taxonomy table (same filtering Liara's own indexer does in `getUrl.js`).
 - **Crawl** (AngleSharp, §0): for each URL, fetch the HTML and parse with
   `AngleSharp.Html.Parser.HtmlParser`. Extract `h1` text as the page title,
   then split into sections by heading elements (`h2`–`h6`) the same way the
   original crawler does: section title = heading text, section body = text
   of siblings up to the next heading, anchor = the heading's (or its
-  adjacent element's) `id` attribute if present. Concurrency: a bounded
-  worker pool (`SemaphoreSlim(CRAWL_CONCURRENCY)`); each worker waits
-  `CRAWL_DELAY_MS` between its own consecutive requests — not a single
-  global serial delay (that's what made the original 82+ minutes).
+  adjacent element's) `id` attribute if present. Concurrency against the
+  **live** site: a bounded worker pool (`SemaphoreSlim(CRAWL_CONCURRENCY)`);
+  each worker waits `CRAWL_DELAY_MS` between its own consecutive requests —
+  not a single global serial delay (that's what made the original crawler
+  82+ minutes). Against **localhost** (seed generation), concurrency/delay
+  tuning doesn't matter — no external site to be polite to.
 - **Chunk/embed/upsert**: as in §1 — one chunk per section, `content_hash =
-  sha256(body)`, batch-embed, upsert into `doc_chunks` keyed on
-  `(url, anchor)`.
+  sha256(body)`, embed in batches of **96 texts per request** (the
+  documented max for `nemotron-3-embed-1b:free` on OpenRouter — see
+  `01-architecture.md` §4a for the resulting request-count math), upsert
+  into `doc_chunks` keyed on `(url, anchor)`.
 - **Failure handling**: a single page failure (timeout, 404, transient
   error) is logged and skipped — it does not abort the whole run. The
   pipeline should finish with whatever it could reach, consistent with the
   NFR4 resilience philosophy applied elsewhere.
-- **Observability**: log run start, periodic progress (every N pages), and
+- **Observability**: log run start, which path was taken (seed vs. live
+  crawl), periodic progress (every N pages, live-crawl path only), and
   completion (chunk count, duration) via Serilog (NFR3) — this is the only
   visibility into ingestion progress for MVP; no separate status endpoint.
 
@@ -485,9 +496,10 @@ mechanics (`.env.example` vs `.env`, `.gitignore`).
 | `MAX_INPUT_CHARS` | NFR9 | `2000` |
 | `CORS_ALLOWED_ORIGIN` | NFR12 | frontend URL |
 | `SUPPORT_CHANNEL_URL` | escalation fallback (01-architecture.md §7) | Liara support link |
-| `DOCS_SITEMAP_URL` | §2a ingestion | `https://docs.liara.ir/sitemap.xml` |
-| `CRAWL_CONCURRENCY` | §2a — bounded worker pool size | `5` |
-| `CRAWL_DELAY_MS` | §2a — per-worker delay between its own requests | `300` |
+| `SEED_DOWNLOAD_URL` | §2a — pre-built `doc_chunks` dump (GitHub Release asset), tried before falling back to a live crawl | unset locally unless testing the seed path; set in prod once generated |
+| `DOCS_SITEMAP_URL` | §2a ingestion (live-crawl fallback, or point at `localhost:3001` when generating a seed) | `https://docs.liara.ir/sitemap.xml` |
+| `CRAWL_CONCURRENCY` | §2a — bounded worker pool size (live-crawl fallback only) | `5` |
+| `CRAWL_DELAY_MS` | §2a — per-worker delay between its own requests (live-crawl fallback only) | `300` |
 
 ## 9. Git hygiene & config loading
 

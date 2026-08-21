@@ -107,55 +107,80 @@ Pending EF Core migrations apply automatically at startup
 
 ## 4. Ingestion pipeline
 
-Fully automatic, no human trigger, part of the same process that serves the
-API (§3). Reimplemented in C# (AngleSharp for HTML parsing) rather than
-reusing Liara's Node `indexer/` — a background job inside a single .NET
-process is simpler to operate than a cross-language handoff, and the
-crawling logic itself (fetch a page, pull sections/headings, extract text
-and anchors) isn't complex enough to be worth the Node dependency just to
-reuse it.
+Two paths, tried in order, both fully automatic — no human trigger at deploy
+time either way:
 
-**Trigger**: `IngestionBackgroundService` (an `IHostedService`) runs once at
-startup. It checks `select count(*) from doc_chunks`; if zero, it runs the
-full pipeline below in the background — the API still starts and accepts
-requests immediately, it does not block on this. If `doc_chunks` already has
-rows (any restart after the first successful run), it skips entirely — no
-re-crawl on every boot.
+1. **Seed load (preferred, fast)**: on startup, if `doc_chunks` is empty and
+   `SEED_DOWNLOAD_URL` is configured, download a pre-built database seed and
+   restore it. Takes seconds, no crawling or embedding at deploy/runtime at
+   all.
+2. **Live crawl (fallback)**: if no seed is configured or the download fails,
+   fall back to crawling `docs.liara.ir` live and embedding from scratch (as
+   originally designed — see below). Keeps the system self-healing/
+   regenerable without extra tooling, just slower.
 
-**Pipeline** (same steps as before, just one process, auto-triggered):
-1. Crawl `docs.liara.ir` (AngleSharp: fetch each page, parse structurally the
-   same way Liara's own indexer does — `h1`/`Section` boundaries — into
+Either way this is one hosted background service
+(`IngestionBackgroundService`, an `IHostedService`) inside the same process
+that serves the API (§3) — no separate worker to deploy.
+
+### 4a. Generating the seed (dev-time, done once by us — not part of any deploy)
+
+1. Run the docs Next.js project locally: `npm run dev` in that repo (serves
+   on **port 3001**). No need for a production build — dev server is fine
+   for a one-off local crawl (first hit per route compiles on demand and is
+   slower than subsequent hits; still far faster overall than crawling the
+   live site under a courtesy delay).
+2. Point the same AngleSharp crawler (§4b) at `http://localhost:3001`
+   instead of `docs.liara.ir`. No concurrency/delay tuning needed against
+   our own localhost — no external site to be polite to.
+3. Chunk + embed (batched, 96 texts per request — the documented OpenRouter
+   max for `nemotron-3-embed-1b:free`) + upsert into a local `doc_chunks`
+   table, same as the live-crawl path.
+4. Export: `pg_dump --format=custom` (compressed binary, not plain SQL text
+   — a plain-text dump of a few thousand 2048-dim vectors would be large)
+   scoped to the `doc_chunks` table.
+5. **Never committed to git.** Upload the dump as a **GitHub Release asset**
+   on this repo (zero new infrastructure/credentials, no git size limits) —
+   the app downloads it via `SEED_DOWNLOAD_URL` at startup. (Alternative:
+   Liara Object Storage, if keeping this entirely within Liara's own
+   services is preferred over a GitHub asset — swap is a config change.)
+6. **OpenRouter free-tier request budget**: ~3–6k chunks ÷ 96/request ≈
+   **32–63 requests total** for a full run — trivially under the 20/min cap,
+   but the **50/day-without-credits** cap can bite across multiple re-runs
+   while iterating on chunking. Put $10 in lifetime credits on the account
+   before serious Phase 2 work — bumps the daily cap to 1,000, which
+   comfortably absorbs repeated dev-time runs. (Full numbers: `03-plan.md`
+   Phase 2.)
+
+### 4b. The crawl+chunk+embed pipeline itself (shared by both paths)
+
+1. Crawl (AngleSharp: fetch each page, parse structurally the same way
+   Liara's own indexer does — `h1`/`Section` boundaries — into
    `{ url, title, body, anchor, platform, category }`, category from the URL
-   path segment per §2 taxonomy).
+   path segment per §2 taxonomy). Against the live site (fallback path
+   only): bounded concurrency (`CRAWL_CONCURRENCY`, default 5) with a
+   modest per-worker delay (`CRAWL_DELAY_MS`, default 300) — **not** the
+   original indexer's serial 4.5s/page delay (82+ minutes for 1100 pages,
+   too slow for a fallback path that's supposed to be self-healing, not a
+   normal path).
 2. Chunk: one chunk per crawled section (~200–800 tokens); merge tiny
    adjacent sections, split oversized ones on paragraph boundaries.
-3. Embed each chunk (batched calls to the embedding endpoint).
-4. Upsert into `doc_chunks` keyed by `(url, anchor)`, `content_hash`-gated so
-   a future re-run (if ever manually forced) skips unchanged chunks.
+3. Embed each chunk, batched at 96 texts/request (§4a).
+4. Upsert into `doc_chunks` keyed by `(url, anchor)`, `content_hash`-gated.
 
-**Speed, not just cost**: Liara's own crawler serializes with a ~4.5s delay
-between page fetches (82+ minutes for 1100 pages) — too slow to sit in front
-of a "just works" deploy. Use **moderate concurrency instead of full serial
-politeness** — a small worker pool (`CRAWL_CONCURRENCY`, default 5) with a
-modest per-worker delay (`CRAWL_DELAY_MS`, default 300) between its own
-requests. Realistic first-boot time with this: **roughly 5–20 minutes**
-(crawl a few minutes, embedding a few minutes more, longer if the free
-embedding tier throttles — §11). Cost is trivial either way (crawling has no
-API cost; embedding ~3–6k chunks costs cents at most) — time, not money, is
-the real constraint here.
-
-**Graceful degradation while ingesting**: if `search_docs` runs against an
+**Graceful degradation while ingesting** (fallback path only — the seed path
+is fast enough this rarely matters): if `search_docs` runs against an
 empty/partial index, it naturally returns nothing, and the existing
 groundedness fallback ("couldn't find a confident answer" — §7) already
-covers this without new logic. Worth a slightly more specific message when
-the table is confirmed empty ("still building my knowledge base, try again
-shortly") vs. the generic low-confidence message, but the safety net exists
-either way.
+covers this without new logic. A slightly more specific "still building my
+knowledge base" message when the table is confirmed empty is a nice-to-have,
+not required.
 
-**QA step**: after the first successful run, spot-check a sample of chunks
-to confirm `anchor` values actually resolve to the right in-page section —
-otherwise citations link to the top of a page instead of the exact section,
-hurting AC1 ("providing appropriate sources") and AC2 (link presentation).
+**QA step**: after the first successful run (either path), spot-check a
+sample of chunks to confirm `anchor` values actually resolve to the right
+in-page section — otherwise citations link to the top of a page instead of
+the exact section, hurting AC1 ("providing appropriate sources") and AC2
+(link presentation).
 
 ## 5. Retrieval
 
@@ -459,12 +484,18 @@ Details for NFR1–NFR15 not already covered above:
 - Chunk size is an estimate pending actually running the crawler against the live
   site — may need tuning after first ingestion run.
 - No offline quality baseline yet — see §12 proposal for a small golden test set.
-- **First-boot latency**: the app is reachable immediately after deploy, but
-  full retrieval capability isn't available until background ingestion
-  finishes (~5–20 min estimate, §4) — deploy well before a live demo, not
-  minutes before. If the crawl concurrency setting turns out too aggressive
-  for `docs.liara.ir` to handle comfortably, dial `CRAWL_CONCURRENCY`/
-  `CRAWL_DELAY_MS` back — it's a config change, not a redesign.
+- **First-boot latency**: with the seed path (§4) working, this is a
+  non-issue — seconds, not minutes. It only resurfaces if `SEED_DOWNLOAD_URL`
+  is unset or the download fails and the system falls back to a live crawl
+  (~5–20 min estimate). Deploy with the seed configured and confirmed
+  working well before a live demo either way. If the fallback crawl's
+  concurrency setting turns out too aggressive for `docs.liara.ir`, dial
+  `CRAWL_CONCURRENCY`/`CRAWL_DELAY_MS` back — a config change, not a
+  redesign.
+- **Seed file size**: `pg_dump --format=custom` should compress the ~3–6k
+  vector rows well, but the actual size is unknown until generated — measure
+  it in Phase 2; if the download itself becomes a bottleneck, that's still
+  far better than a live crawl+embed, just worth knowing.
 
 ## 12. Deprioritized / optional enhancements
 
