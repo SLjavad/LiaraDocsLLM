@@ -28,3 +28,6 @@ ingestion/crawler/crawl-doc-data.json
 Thumbs.db
 .idea/
 *.swp
+
+# Local tool config
+.claude/settings.local.json

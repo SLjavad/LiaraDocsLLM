@@ -7,6 +7,44 @@ Redis key scheme, router contract, API request/response shapes, SSE protocol,
 agent tool signatures, taxonomy, and config. OpenCode should treat this as the
 source of truth for exact shapes; `01-architecture.md` for the *why*.
 
+## 0. Pinned tooling & versions
+
+No "use the latest" anywhere below — versions are pinned explicitly so there's
+nothing to look up or guess. If a pinned package has a newer version available
+by the time this is implemented, stay on what's pinned here unless the tech
+lead updates this section; don't self-upgrade mid-build.
+
+**Backend**
+| Tool/package | Version | Notes |
+|---|---|---|
+| .NET SDK | **10.0** (LTS) | GA Nov 2025, supported to Nov 2028 |
+| ASP.NET Core Web API | ships with .NET 10 SDK | |
+| `Microsoft.Agents.AI` (Microsoft Agent Framework) | **1.18.0** | GA'd April 2026; `dotnet add package Microsoft.Agents.AI` |
+| `Npgsql.EntityFrameworkCore.PostgreSQL` | **9.0.1+** | |
+| EF Core | **10.x** (paired with .NET 10) | |
+| `Pgvector` | **0.3.2+** | C# `Vector` type for pgvector columns |
+| `Pgvector.EntityFrameworkCore` | **0.3.0** | EF Core integration for `Pgvector` — see §1a for how it's used |
+| `Serilog.AspNetCore` | latest stable at build time | structured logging, NFR3 |
+| `StackExchange.Redis` | latest stable at build time | Redis client |
+| `Microsoft.Extensions.Http.Resilience` | latest stable at build time | timeout/retry, NFR4 |
+| Test framework | **xUnit** | Phase 6 unit tests |
+
+**Frontend**
+| Tool/package | Version | Notes |
+|---|---|---|
+| Next.js | **16.2.7**, App Router | Pages Router is legacy — do not use it; Turbopack is the default bundler, leave it on |
+| React | **19.2** | ships with Next.js 16.2.7 |
+| TypeScript | latest 5.x stable at build time | |
+| Tailwind CSS | **v4** | config lives in `globals.css` via `@theme`, not `tailwind.config.js` — v3-style config is wrong for this stack |
+| shadcn/ui | via `npx shadcn@latest init` | Tailwind v4-native; CLI has **built-in RTL support** (converts physical→logical CSS classes) — relevant since Persian content needs RTL layout, see `05-frontend-plan.md` |
+| `streamdown` | latest stable at build time | drop-in `react-markdown` replacement built for AI streaming — handles incomplete/unterminated markdown mid-stream, GFM, Shiki code blocks. Do **not** use plain `react-markdown` for the streamed chat view (it wasn't built for partial input and can flicker/misrender mid-stream); it's fine for the fully-formed Practice Mode explanation text if a lighter dependency is preferred there. |
+| Package manager | npm | no strong reason to deviate |
+
+No Vercel AI SDK (`ai` package) dependency — our SSE event schema (`meta`/
+`sources` separate from token deltas) doesn't match its `useChat` data-stream
+protocol, and pulling it in just for that would fight the framework rather
+than use it. See `05-frontend-plan.md` for the custom SSE client instead.
+
 ## 1. Data model (PostgreSQL + pgvector + pg_trgm)
 
 ```sql
@@ -98,6 +136,36 @@ exists for `(url, anchor)` with the same hash, skip re-embedding (cost saving);
 if the hash differs, re-embed and update; if `(url, anchor)` no longer appears
 in the crawl output, leave it (no deletion pass in MVP — acceptable staleness
 risk, not worth the complexity here).
+
+### 1a. How this schema gets created (EF Core + raw SQL migration)
+
+Don't try to express the pgvector-specific pieces (extensions, the `vector`
+column type, the HNSW index, the `pg_trgm` GIN index) through EF Core's
+fluent API by guesswork — several of these don't have a stable, well-known
+fluent-API surface, and getting it subtly wrong is a bad failure mode (silent
+wrong index type, no cosine ops). Use raw SQL for those specific pieces
+instead, inside a normal EF Core migration:
+
+1. Define entity classes for all six tables normally (POCO classes + a
+   `DbContext`). For `DocChunk.Embedding`, use the `Pgvector.Vector` type as
+   the property type (from the `Pgvector` package) and configure
+   `.HasColumnType($"vector({EMBED_DIM})")` in `OnModelCreating` — this part
+   *is* well-supported by `Pgvector.EntityFrameworkCore`, use it normally.
+2. Run `dotnet ef migrations add InitialCreate` to generate the migration
+   from those entities.
+3. Edit the generated migration's `Up()` method: before the generated
+   `CreateTable` calls, add `migrationBuilder.Sql("create extension if not
+   exists vector;")` and the same for `pg_trgm`. After the generated table
+   creation, add `migrationBuilder.Sql(...)` with the exact `create index ...
+   using hnsw (...)` and `... using gin (...)` statements from §1 above,
+   verbatim.
+4. Everything else (columns, foreign keys, uniques, defaults) comes from the
+   normal EF Core-generated migration — only the four pgvector/pg_trgm-specific
+   statements are raw SQL.
+- For querying, `Pgvector.EntityFrameworkCore` supports LINQ methods like
+  `.OrderBy(c => c.Embedding.CosineDistance(queryVector))` — use that for the
+  retrieval service rather than raw SQL, it's the well-supported part of the
+  package.
 
 ## 2. Documentation taxonomy
 

@@ -16,9 +16,17 @@ something you hit, stop and flag it rather than guessing.
 
 - `specs/01-architecture.md` — business context, personas, architecture,
   agent design, functional/non-functional requirements (the *why*).
-- `specs/02-technical-spec.md` — DB schema, API contracts, router/tool
-  signatures, config reference (the exact *what*, implementation-level).
+- `specs/02-technical-spec.md` — DB schema, **pinned tool/package versions**
+  (§0 — don't guess or use "latest", they're pinned explicitly), API
+  contracts, router/tool signatures, config reference (the exact *what*,
+  implementation-level).
 - `specs/03-plan.md` — phased execution plan, in order (the *when*).
+- `specs/04-prompts.md` — **literal system/router/exam-generation prompt
+  text and refusal templates**. Use verbatim, interpolating only the noted
+  placeholders — do not paraphrase, rewrite, or re-derive these from the
+  policy descriptions in `01-architecture.md` §7.
+- `specs/05-frontend-plan.md` — full frontend architecture: routes,
+  components, state management, streaming, RTL handling.
 
 ## What this is
 
@@ -66,6 +74,14 @@ looking shortcut. Don't.
 6. **Triage/clarification round-capping is enforced in backend code** (a
    counter persisted in `sessions.pending_clarification`), never left to the
    model to self-track across turns.
+7. **Tool/package versions are pinned, not "latest"** (`02-technical-spec.md`
+   §0). If a pinned version is stale by the time you're building, ask/flag
+   it — don't silently substitute a newer one.
+8. **Prompts are content, not code to author**: system prompt, router
+   prompt, exam-generation prompt, and all refusal/trivial templates come
+   verbatim from `04-prompts.md`. Writing new prompt wording inline while
+   implementing is out of scope for a coding agent here — that's a tech-lead
+   edit to `04-prompts.md`.
 
 ## Repo layout (target — see `03-plan.md` Phase 1 for the full scaffold)
 

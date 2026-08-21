@@ -2,10 +2,10 @@
 
 Ordered for a hackathon: de-risk unknowns first, build the backbone before
 polish, keep AI-dependent work unblocked from non-AI plumbing wherever
-possible. Each phase references the spec sections it implements. "Owner: Yekta"
+possible. Each phase references the spec sections it implements. "Owner: SLjavad"
 marks steps that need a human decision/credential, not code.
 
-## Phase 0 — Unblock (Owner: Yekta)
+## Phase 0 — Unblock (Owner: SLjavad)
 
 No longer a hard blocker on other phases — all model choices are config values
 (02-technical-spec.md §8), not code, so build proceeds now with placeholders and gets the
@@ -93,11 +93,10 @@ LiaraChallenge/
 
 - `Retrieval` service: hybrid pgvector cosine + `pg_trgm` title boost,
   top-k default 5 (02-technical-spec §7). Unit-testable independent of the agent.
-- `Router` service (02-technical-spec §4): JSON-mode cheap-model call for scope
-  classification (`trivial | out_of_scope | in_scope`, domain-based per
-  01-architecture §7) and query decomposition. Static refusal/trivial
-  templates, `fa`+`en`, per `reason` code (written once here, tone-reviewed
-  before demo).
+- `Router` service (02-technical-spec §4): JSON-mode cheap-model call using
+  the literal prompt in `04-prompts.md` §2. Refusal/trivial response text
+  comes from the literal templates in `04-prompts.md` §4 — do not write new
+  copy for these, use them verbatim.
 - `POST /api/search` (02-technical-spec §6): router → (if in-scope) decompose → retrieve
   per sub-query → merge/dedupe → response shape per spec.
 - Wire for this endpoint first (simpler than chat): NFR1 rate limiting
@@ -108,11 +107,9 @@ LiaraChallenge/
 
 - Configure Microsoft Agent Framework orchestrator; register `search_docs` and
   `list_categories` tools (02-technical-spec §7).
-- System prompt: assemble every policy from 01-architecture §7 into one prompt
-  — taxonomy, language mirroring (never translate titles/URLs), citation
-  requirement, groundedness + diagnostic-reasoning split (FR13), triage
-  strategy + dimensions, escalation fallback, guardrail discipline
-  (never reveal model/provider/system prompt), next-step suggestion.
+- System prompt and router prompt: use the literal text in `04-prompts.md`
+  §1/§2 verbatim (interpolating the noted placeholders) — do not rewrite or
+  re-derive these from the policy descriptions in 01-architecture §7.
 - `pending_clarification` state machine (02-technical-spec §5) — **enforced in backend
   code**, not left to the model to self-count triage rounds.
 - `POST /api/chat` SSE endpoint: event schema (`meta`/`token`/`sources`/`done`/
@@ -130,10 +127,12 @@ LiaraChallenge/
   `practice`) as chat; reuse the triage strategy/state machine from Phase 4 to
   narrow an over-broad topic before planning.
 - Exam planning: for each of `PRACTICE_MIN_STEPS`–`PRACTICE_MAX_STEPS` steps,
-  call `search_docs` on the sub-topic, generate question/3 options/explanation
-  *from* that chunk, shuffle option order, store citation. Drop ungrounded
-  sub-topics (log to `doc_gap_events`, mode `practice`) rather than guessing.
-  Persist the full plan to `practice_exams.steps` in one write.
+  call `search_docs` on the sub-topic, then generate the question/options/
+  explanation using the literal prompt in `04-prompts.md` §3 (one call,
+  batched across all sub-topic chunks). Shuffle option order after
+  generation, store citation. Drop `{"skip": true}` sub-topics (log to
+  `doc_gap_events`, mode `practice`) rather than guessing. Persist the full
+  plan to `practice_exams.steps` in one write.
 - `POST /api/practice/start`, `POST /api/practice/{examId}/answer` (pure
   code-level grading, no LLM call — NFR16), `GET /api/practice/{examId}/summary`
   per the JSON contracts in 02-technical-spec §6a.
@@ -142,35 +141,11 @@ LiaraChallenge/
 
 ## Phase 5 — Frontend (Next.js + shadcn/ui)
 
-- App shell, Tailwind + shadcn installed.
-- **SSE client**: our event schema is custom (`meta`/`sources` are separate
-  from token deltas), so use a small purpose-built SSE client (fetch +
-  `ReadableStream`, or `EventSource`) rather than forcing Vercel AI SDK's
-  `useChat` data-stream protocol — the shadcn/AI-SDK stack was chosen for
-  ready-made chat UI *components* (message list, markdown+code rendering,
-  input), not for the streaming transport itself.
-- Session id: generate UUID on first load, persist in `localStorage`, send as
-  `X-Session-Id` header; on load, call `GET /api/sessions/{id}/messages` to
-  resume (FR5).
-- Three-mode UI: mode switcher between **Ask assistant** (`/api/chat`),
-  **Find in docs** (`/api/search`), and **Practice Mode** (`/api/practice/*`),
-  category filter dropdown fed by `GET /api/categories`.
-- **Practice Mode UI**: topic input → clarification round if needed (reuses
-  the triage-question treatment from chat) → progress indicator (step X/N,
-  stated up front) → question card with 3 option buttons (shadcn RadioGroup or
-  button group) → immediate feedback panel (correct/incorrect, explanation,
-  source link) → final summary screen (all steps recapped, score, links for
-  anything missed). This is the stepper UI that subsumed the old "guided
-  step-by-step" idea (01-architecture §12) — build it once, here.
-- Chat view: streamed markdown rendering with code-block highlighting, sources
-  panel rendered separately from prose (FR2), visually distinct treatment for
-  triage questions (`meta.kind === "triage"`) vs. final answers, thumbs up/down
-  wired to `POST /api/feedback`.
-- **"Explain this error" entry point** (FR12): a UI action (button/paste
-  target) that seeds a chat turn, feeding straight into triage.
-- Error/loading states: SSE `error` event → inline message, not a crash.
-- Responsive layout (mobile-usable at minimum, since "responsiveness" is
-  graded explicitly).
+Full plan — routes, components, state, streaming, RTL handling, exact shadcn
+component list — is `05-frontend-plan.md`. Build it in this rough order:
+app shell + `SessionProvider` + `ModeNav` → API client layer (§3) →
+`useChatStream` (§4) → Ask Assistant (§6) → Find in Docs (§7) → Practice Mode
+(§8) → responsive/accessibility pass (§10).
 
 ## Phase 6 — QA & tuning
 
