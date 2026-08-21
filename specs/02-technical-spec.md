@@ -489,31 +489,43 @@ list_categories() -> { categories: [{ id, labelFa, labelEn }] }
 ```
 Static taxonomy from §2, used by the agent for disambiguating questions.
 
-## 7a. Embedding service — instruction prefixes
+## 7a. Embedding service — query/document signaling
 
-`nemotron-3-embed-1b` is an asymmetric retrieval model requiring different
-prefixes for queries vs. documents (01-architecture.md §5, confirmed against
-NVIDIA's own model card). Encapsulate this behind two methods so no call
-site has to remember it:
+`nemotron-3-embed-1b` is an asymmetric retrieval model requiring
+query-vs-document signaling (01-architecture.md §5). **Primary mechanism**:
+OpenRouter's documented `input_type` request parameter (`search_query` /
+`search_document`) — not manual text-prefix concatenation. Encapsulate this
+behind two methods so no call site has to remember it:
 
 ```
 IEmbeddingService:
-  EmbedDocumentAsync(text: string) -> float[]   // prepends "passage: " if EMBEDDING_USE_PREFIXES
-  EmbedQueryAsync(text: string)    -> float[]    // prepends "query: "   if EMBEDDING_USE_PREFIXES
+  EmbedDocumentAsync(text: string) -> float[]
+    // request body includes input_type: "search_document" if EMBEDDING_USE_INPUT_TYPE
+  EmbedQueryAsync(text: string) -> float[]
+    // request body includes input_type: "search_query" if EMBEDDING_USE_INPUT_TYPE
 ```
 
 - `EmbedDocumentAsync` is used by ingestion (§2a) for every chunk.
   `EmbedQueryAsync` is used by `search_docs`, and by `/api/search`'s
   sub-query embedding.
-- Prefixing is gated by `EMBEDDING_USE_PREFIXES` (default `true`), **not
-  hardcoded on** — the `text-embedding-3-small` fallback doesn't use this
-  convention, so switching providers means setting this to `false`, a
-  config change, not a code change (consistent with NFR2's black-box model
-  config principle).
+- Gated by `EMBEDDING_USE_INPUT_TYPE` (default `true`), **not hardcoded
+  on** — the `text-embedding-3-small` fallback doesn't support this
+  parameter, so switching providers means setting this to `false`, a
+  config change, not a code change (NFR2 black-box model config principle).
+- **Verify empirically, don't trust the docs alone** (01-architecture.md §5):
+  neither OpenRouter's nor NVIDIA's documentation confirms `input_type` is
+  correctly honored for this specific model when proxied through OpenRouter.
+  Phase 2 QA must compare embeddings/ranking with `input_type` set vs.
+  unset on a known query/chunk pair. If it turns out to have no effect,
+  fall back to manual `"query: "`/`"passage: "` text-prefix concatenation
+  (per NVIDIA's model card) instead — same `IEmbeddingService` interface,
+  just a different implementation inside the two methods.
 - **Cache key correctness** (§3 `cache:embedding:{hash(text)}`): the hash
-  must be computed over the **final prefixed text**, not the raw input —
-  `"query: deploy a django app"` and `"passage: deploy a django app"` are
-  different embeddings and must not collide in the cache.
+  must incorporate `input_type`, not just the raw text — a query and a
+  document embedding of the identical string are different vectors and must
+  not collide in the cache (e.g. hash `f"{inputType}:{text}"`, or the
+  equivalent if the fallback manual-prefix path is used instead, where the
+  prefixed text itself already differs).
 - No extra L2-normalization step needed — the model's output is already
   normalized (01-architecture.md §5), so pgvector's `vector_cosine_ops`
   index (§1) is used as-is.
@@ -534,7 +546,7 @@ mechanics (`.env.example` vs `.env`, `.gitignore`).
 | `ROUTER_MODEL_NAME` | cheap model for §4 router (can be same provider, smaller/cheaper model) | current candidate: `openai/gpt-4o-mini` |
 | `EMBEDDING_BASE_URL` / `EMBEDDING_API_KEY` / `EMBEDDING_MODEL_NAME` | embedding provider — separate from chat (OpenRouter, not the Liara AI Gateway); OpenAI-compatible endpoint. `EMBEDDING_API_KEY` **is** the OpenRouter key — no separate `OPENROUTER_API_KEY` var, nothing else in the system calls OpenRouter directly. | current candidate: `nvidia/nemotron-3-embed-1b:free` via OpenRouter — #1 on RTEB, benchmarked on Persian (resolves the risk in `01-architecture.md` §5/§11), free. Verify free-tier rate limit sustains bulk ingestion (Phase 2) — fallback `openai/text-embedding-3-small` via Liara AI Gateway is a config-only swap. |
 | `EMBED_DIM` | vector column dimension, fixed at migration time — changing providers/models with a different dim requires a new migration + full re-ingest | `2048` for `nemotron-3-embed-1b` (verify empirically, §5 risk note); `1536` for `text-embedding-3-small` |
-| `EMBEDDING_USE_PREFIXES` | §7a — `"query: "`/`"passage: "` prefixing, required for `nemotron-3-embed-1b`, wrong for `text-embedding-3-small` | `true` — **must be `true`, never `false`, while using `nemotron-3-embed-1b`; wrong value has no error, just silently worse ranking** |
+| `EMBEDDING_USE_INPUT_TYPE` | §7a — sends `input_type: search_query`/`search_document` to OpenRouter, required for `nemotron-3-embed-1b`, unsupported by `text-embedding-3-small` | `true` — **wrong value has no error, just silently worse ranking; verify effectiveness empirically in Phase 2 QA, don't trust this blind** |
 | `POSTGRES_CONNECTION_STRING` | Postgres/pgvector | — |
 | `REDIS_CONNECTION_STRING` | Redis | — |
 | `RATE_LIMIT_SESSION_PER_MIN` | NFR1 | `20` |

@@ -120,12 +120,15 @@ hosted service, shared by both the seed path and the live-crawl fallback:
      locking in `EMBED_DIM` at migration time (one source suggested 4096,
      likely describing the 8B variant — confirm against what the API
      actually returns for the 1B model before trusting either number).
-   - **Verify prefixing is actually wired up**: `IEmbeddingService`
-     (02-technical-spec §7a) must prepend `"passage: "` for chunks and
-     `"query: "` for queries — this is easy to silently skip since nothing
-     errors if it's missing, it just quietly ranks worse. Spot-check a
-     known query against a known-relevant chunk with and without prefixing
-     to confirm it actually changes/improves the ranking.
+   - **Verify `input_type` is actually effective**: `IEmbeddingService`
+     (02-technical-spec §7a) sends `input_type: search_document` for chunks
+     and `search_query` for queries — this is easy to silently skip since
+     nothing errors if it's missing, it just quietly ranks worse, *and*
+     neither OpenRouter's nor NVIDIA's docs confirm it's honored correctly
+     for this model when proxied. Spot-check a known query against a
+     known-relevant chunk with `input_type` set vs. unset — if it makes no
+     measurable difference, switch to the manual `"query: "`/`"passage: "`
+     text-prefix fallback (01-architecture §5) instead.
    - Spot-check a sample of chunks — do `anchor` links resolve to the right
      in-page section?
    - Cross-lingual smoke test: run a handful of English queries against the
@@ -145,9 +148,9 @@ hosted service, shared by both the seed path and the live-crawl fallback:
 
 - `Retrieval` service: hybrid pgvector cosine + `pg_trgm` title boost,
   top-k default 5 (02-technical-spec §7). Embeds incoming queries via
-  `IEmbeddingService.EmbedQueryAsync` (§7a) — never the raw text directly,
-  the `"query: "` prefix is part of correct retrieval, not optional
-  polish. Unit-testable independent of the agent.
+  `IEmbeddingService.EmbedQueryAsync` (§7a) — never call the raw embedding
+  API directly, the query/document signaling is part of correct retrieval,
+  not optional polish. Unit-testable independent of the agent.
 - `Router` service (02-technical-spec §4): JSON-mode cheap-model call using
   the literal prompt in `04-prompts.md` §2. Refusal/trivial response text
   comes from the literal templates in `04-prompts.md` §4 — do not write new

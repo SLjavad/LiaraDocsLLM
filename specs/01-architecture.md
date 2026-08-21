@@ -229,22 +229,33 @@ the exact section, hurting AC1 ("providing appropriate sources") and AC2
   confirming OpenRouter's free-tier rate limit can sustain bulk ingestion —
   fallback is `openai/text-embedding-3-small` via the Liara AI Gateway if
   not (§11).
-- **Instruction prefixes are required for this model** (confirmed on
-  NVIDIA's own model card, not just a blog post) — it's an asymmetric
-  retrieval model trained expecting `"query: "` prepended to search queries
-  and `"passage: "` prepended to indexed document text. Getting this wrong
+- **Query-vs-document signaling is required for this model** (confirmed on
+  NVIDIA's own model card) — it's an asymmetric retrieval model trained to
+  distinguish search queries from indexed document text. Getting this wrong
   doesn't error, it silently degrades ranking quality — a dangerous class of
-  bug since nothing looks broken. Since OpenRouter's endpoint is a generic
-  OpenAI-compatible wrapper (not NVIDIA's own prefix-aware API), **the
-  prefix must be applied by us**, at every embedding call site, for both
-  ingestion (chunks → `"passage: "`) and retrieval (user queries/sub-queries
-  → `"query: "`). This is model-specific, not universal — the
-  `text-embedding-3-small` fallback does **not** use this convention, so
-  prefix behavior must be gated per-provider, not hardcoded on. Embeddings
-  from this model are already L2-normalized (cosine similarity is correct
-  as-is, matching the existing pgvector `vector_cosine_ops` setup — no
-  extra normalization step needed). Concrete implementation:
-  `02-technical-spec.md` §7a.
+  bug since nothing looks broken. **Mechanism**: OpenRouter's embeddings API
+  documents an `input_type` request parameter (`search_query` /
+  `search_document`, checked directly against OpenRouter's detailed API
+  reference, not a secondary source) — use that, not manual text-prefix
+  concatenation. This mirrors NVIDIA's own recommended access path (their
+  `/v2/embed` endpoint also auto-applies the model's prefix convention via an
+  `input_type`-style parameter), so `input_type` is the more likely-correct
+  mechanism than guessing at raw string surgery. **Residual uncertainty**:
+  neither OpenRouter's nor NVIDIA's docs confirm whether OpenRouter's
+  `input_type` is actually honored correctly for this specific model when
+  proxied — that mapping happens inside whatever backend OpenRouter routes
+  to, which isn't documented. This is exactly why the empirical check in
+  Phase 2 QA matters (compare embeddings/ranking with `input_type` set vs.
+  unset) — it resolves what the docs can't. If QA shows `input_type` isn't
+  effective, the documented fallback is manual `"query: "`/`"passage: "` text
+  prefixing (per NVIDIA's model card) instead — not built by default, just
+  the contingency if the primary mechanism turns out not to work.
+  Provider-specific either way: the `text-embedding-3-small` fallback
+  doesn't use this convention, so this must be gated per-provider, not
+  hardcoded on. Embeddings from this model are already L2-normalized
+  (cosine similarity is correct as-is, matching the existing pgvector
+  `vector_cosine_ops` setup — no extra normalization step needed). Concrete
+  implementation: `02-technical-spec.md` §7a.
 
 ## 6. API contract (modes → endpoints)
 
