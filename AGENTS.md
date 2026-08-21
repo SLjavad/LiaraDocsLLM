@@ -12,6 +12,21 @@ Specs are complete. Implementation has not started. Work phase by phase from
 architecture that isn't in the specs — if the specs are silent or wrong on
 something you hit, stop and flag it rather than guessing.
 
+## OpenCode agent split
+
+`opencode.json` (repo root) defines two custom primary agents, each pinned to
+a different model via the OpenCode Go plan and scoped by edit permission to
+its own directory — switch between them with **Tab** or `@backend`/
+`@frontend` in the OpenCode TUI:
+- **`backend`** — `opencode-go/glm-5.3`, edit access restricted to
+  `backend/**`, `docker-compose.yml`, `.env.example`.
+- **`frontend`** — `opencode-go/kimi-k3`, edit access restricted to
+  `frontend/**`.
+
+Both are denied write access to `specs/**`, `AGENTS.md`, `CLAUDE.md`, and
+`.env` — spec changes are a tech-lead edit, never an implementation-agent
+one. Model ids confirmed against `https://opencode.ai/zen/go/v1/models`.
+
 ## Codebase indexing tool
 
 This project uses [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp)
