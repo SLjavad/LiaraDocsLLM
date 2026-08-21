@@ -12,6 +12,16 @@ Specs are complete. Implementation has not started. Work phase by phase from
 architecture that isn't in the specs — if the specs are silent or wrong on
 something you hit, stop and flag it rather than guessing.
 
+## Codebase indexing tool
+
+This project uses [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp)
+for code structure navigation (`search_graph`, `query_graph`, `trace_path`,
+`get_architecture`, etc.) — installed and configured for both Claude Code and
+OpenCode on this machine. Once real source code exists (Phase 1 onward),
+prefer these tools over ad-hoc grepping for understanding how existing code
+relates before making cross-cutting changes. Not useful yet against just the
+specs — its value kicks in once `backend/`/`frontend/` have real code.
+
 ## Source of truth (read before writing any code)
 
 - `specs/01-architecture.md` — business context, personas, architecture,
