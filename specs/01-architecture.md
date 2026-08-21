@@ -558,13 +558,17 @@ Details for NFR1–NFR15 not already covered above:
 
 ## 10. Deployment (target: Liara)
 
-- Backend: Liara App (Dockerfile, .NET runtime image).
-- Frontend: Liara App (Node/Next.js).
-- Postgres w/ pgvector: Liara DBaaS (PostgreSQL).
-- Redis: Liara DBaaS.
-- Local dev: docker-compose with `pgvector/pgvector` and `redis` images, backend
-  and frontend run natively (`dotnet run` / `next dev`) against them. Same engine
-  locally and on Liara — no separate local-only DB code path to maintain.
+- Backend: Liara App (own Dockerfile, .NET runtime image). Ingestion runs
+  inside this same container (§4) — no separate ingestion container.
+- Frontend: Liara App (own Dockerfile, Next.js).
+- Postgres w/ pgvector: Liara DBaaS (PostgreSQL) — managed by Liara, not
+  something we containerize or maintain a Dockerfile for.
+- Redis: Liara DBaaS — same, managed.
+- Local dev: docker-compose with the official `pgvector/pgvector` and `redis`
+  images (not custom-built, just pulled) for the two DBaaS stand-ins; backend
+  and frontend run natively (`dotnet run` / `next dev`) against them, not
+  containerized locally. Same DB engine locally and on Liara — no separate
+  local-only DB code path to maintain.
 - Sizing: smallest available tier for each service is sufficient for hackathon
   demo load; no autoscaling configuration needed.
 
