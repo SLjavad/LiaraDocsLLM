@@ -206,6 +206,13 @@ the exact section, hurting AC1 ("providing appropriate sources") and AC2
 - Hybrid: pgvector cosine similarity (primary) + simple `ILIKE`/trigram filter on
   title as a tie-breaker/boost. No separate keyword engine (Meilisearch) needed —
   keeps infra minimal, avoids double-indexing cost.
+- **No ANN index on `embedding`** — exact cosine distance via pgvector's `<=>`
+  operator (sequential scan), not an HNSW/IVFFlat index. pgvector caps both
+  index types at 2000 dimensions for the `vector` type (page-size
+  constraint); our embeddings are 2048-dim, over that limit. At corpus scale
+  (~3–6k chunks) an exact scan is single-digit milliseconds and strictly more
+  accurate than an approximate index would be, so this isn't a workaround,
+  it's the better choice at this scale — see §11.
 - Retrieval is a **tool** the agent calls (`search_docs(query, category?)`), not a
   forced pre-step — lets the agent decide when it already knows the answer vs.
   needs to search, and lets it re-query with a refined query if first results are
@@ -253,9 +260,9 @@ the exact section, hurting AC1 ("providing appropriate sources") and AC2
   Provider-specific either way: the `text-embedding-3-small` fallback
   doesn't use this convention, so this must be gated per-provider, not
   hardcoded on. Embeddings from this model are already L2-normalized
-  (cosine similarity is correct as-is, matching the existing pgvector
-  `vector_cosine_ops` setup — no extra normalization step needed). Concrete
-  implementation: `02-technical-spec.md` §7a.
+  (cosine similarity is correct as-is via pgvector's `<=>` operator — no
+  extra normalization step needed; no ANN index is involved either way, see
+  above). Concrete implementation: `02-technical-spec.md` §7a.
 
 ## 6. API contract (modes → endpoints)
 
@@ -583,6 +590,15 @@ Details for NFR1–NFR15 not already covered above:
 
 - pgvector extension: confirmed available on Liara's managed Postgres — no
   self-hosted fallback needed.
+- **pgvector's 2000-dim cap on HNSW/IVFFlat indexes** (verified against
+  pgvector's own docs and empirically): our `EMBED_DIM=2048` exceeds it, so
+  `doc_chunks.embedding` carries no ANN index — retrieval is an exact
+  cosine-distance scan (§5). Rejected alternatives: shrinking `EMBED_DIM`
+  (breaks the model's actual output, not viable); switching the column to
+  `halfvec(2048)` to keep an HNSW index (adds a mapping/precision-loss cost
+  the corpus size doesn't justify — an ANN index earns its complexity in the
+  millions-of-rows range, not thousands). Revisit only if the corpus grows
+  by roughly two orders of magnitude past the hackathon scope.
 - Assumes the eventual chat-model API key's provider is OpenAI-wire-compatible
   (chat completions + tool calling). Embeddings may come from a different
   provider (confirmed acceptable).

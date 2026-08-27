@@ -68,7 +68,10 @@ create table doc_chunks (
   updated_at    timestamptz not null default now(),
   unique (url, anchor)
 );
-create index doc_chunks_embedding_idx on doc_chunks using hnsw (embedding vector_cosine_ops);
+-- No index on embedding: pgvector caps HNSW/IVFFlat at 2000 dims for the
+-- vector type, EMBED_DIM=2048 exceeds it. Exact cosine-distance scan via
+-- the <=> operator instead — see 01-architecture.md §5 and §11 for why
+-- this is the right call (not just a workaround) at this corpus scale.
 create index doc_chunks_title_trgm_idx on doc_chunks using gin (title gin_trgm_ops);
 create index doc_chunks_category_idx on doc_chunks (category);
 
@@ -139,14 +142,30 @@ if the hash differs, re-embed and update; if `(url, anchor)` no longer appears
 in the crawl output, leave it (no deletion pass in MVP — acceptable staleness
 risk, not worth the complexity here).
 
+`anchor` is nullable, and Postgres unique constraints treat every `NULL` as
+distinct — the `unique (url, anchor)` constraint alone does **not** de-dupe
+page-level chunks (no anchor). The idempotency check above is an
+application-level lookup, not a reliance on the DB constraint rejecting a
+duplicate insert — so the ingestion pipeline's existence-check query must
+match on `anchor is null` (not `anchor = null`) when `anchor` is absent, or
+anchor-less pages will accumulate duplicate rows on every re-run. The unique
+constraint is a backstop for anchored rows, not the primary dedup mechanism.
+
+Foreign keys from `messages`, `practice_exams` (→ `sessions`) and
+`message_feedback`, `practice_exam_answers` (→ their parent row) cascade on
+delete — intentional: a session's messages/exams/answers/feedback have no
+independent meaning once the session is gone, and this keeps a future
+session-cleanup or user-delete flow from needing to manually fan out deletes
+across four tables.
+
 ### 1a. How this schema gets created (EF Core + raw SQL migration)
 
 Don't try to express the pgvector-specific pieces (extensions, the `vector`
-column type, the HNSW index, the `pg_trgm` GIN index) through EF Core's
-fluent API by guesswork — several of these don't have a stable, well-known
-fluent-API surface, and getting it subtly wrong is a bad failure mode (silent
-wrong index type, no cosine ops). Use raw SQL for those specific pieces
-instead, inside a normal EF Core migration:
+column type, the `pg_trgm` GIN index) through EF Core's fluent API by
+guesswork — several of these don't have a stable, well-known fluent-API
+surface, and getting it subtly wrong is a bad failure mode (silent wrong
+index type, no cosine ops). Use raw SQL for those specific pieces instead,
+inside a normal EF Core migration:
 
 1. Define entity classes for all six tables normally (POCO classes + a
    `DbContext`). For `DocChunk.Embedding`, use the `Pgvector.Vector` type as
@@ -158,11 +177,11 @@ instead, inside a normal EF Core migration:
 3. Edit the generated migration's `Up()` method: before the generated
    `CreateTable` calls, add `migrationBuilder.Sql("create extension if not
    exists vector;")` and the same for `pg_trgm`. After the generated table
-   creation, add `migrationBuilder.Sql(...)` with the exact `create index ...
-   using hnsw (...)` and `... using gin (...)` statements from §1 above,
-   verbatim.
+   creation, add `migrationBuilder.Sql(...)` with the exact `... using gin
+   (...)` statement from §1 above, verbatim. No `embedding` index — see the
+   comment in §1 on the 2000-dim pgvector cap.
 4. Everything else (columns, foreign keys, uniques, defaults) comes from the
-   normal EF Core-generated migration — only the four pgvector/pg_trgm-specific
+   normal EF Core-generated migration — only the three pgvector/pg_trgm-specific
    statements are raw SQL.
 - For querying, `Pgvector.EntityFrameworkCore` supports LINQ methods like
   `.OrderBy(c => c.Embedding.CosineDistance(queryVector))` — use that for the
@@ -170,8 +189,18 @@ instead, inside a normal EF Core migration:
   package.
 - Steps 1–3 above are a one-time **dev-time** action (write the migration
   file, commit it). **Applying** the migration at runtime is automatic —
-  `Database.MigrateAsync()` runs at API startup (§2a) — no one ever runs
-  `dotnet ef database update` by hand, locally or on Liara.
+  `Database.MigrateAsync()` runs once at API startup, before `app.Run()` —
+  no one ever runs `dotnet ef database update` by hand, locally or on Liara.
+- **Startup dimension guard**: `EMBED_DIM` is read from config at every boot,
+  but the real column dimension is whatever was baked into the committed
+  migration — the two can silently drift (someone bumps `EMBED_DIM` in
+  `.env` for a different embedding model without regenerating the
+  migration). Right after `MigrateAsync()`, query the actual column
+  dimension (e.g. `atttypmod` for the `embedding` column via
+  `information_schema`/`pg_attribute`, or simply attempt
+  `HasColumnType($"vector({EMBED_DIM})")` against the live schema) and throw
+  a startup error on mismatch — don't let this surface later as an opaque
+  Postgres error on the first ingestion write.
 
 ## 2. Documentation taxonomy
 
@@ -205,12 +234,14 @@ trigger, seed-first with live-crawl fallback). Concrete mechanics:
   registered with `builder.Services.AddHostedService<IngestionBackgroundService>()`
   in the API's `Program.cs`. Runs once in `ExecuteAsync` at startup, not on a
   timer.
-- **Startup sequence**:
-  1. `await db.Database.MigrateAsync()` — apply any pending EF Core
-     migrations automatically, no manual `dotnet ef database update`.
-  2. `await db.DocChunks.CountAsync()` — if `> 0`, return immediately
+- **Startup sequence**: migrations are already applied by the API host itself
+  before this service's `ExecuteAsync` ever runs (`Program.cs` calls `await
+  db.Database.MigrateAsync()` once, synchronously, before `app.Run()` — see
+  §1a) — don't call `MigrateAsync()` again here, it'd just be a redundant
+  round trip to the migrations-history table.
+  1. `await db.DocChunks.CountAsync()` — if `> 0`, return immediately
      (already populated on a prior boot, skip everything below).
-  3. If `0` and `OBJECT_STORAGE_*` (§8) are all set: fetch the seed via
+  2. If `0` and `OBJECT_STORAGE_*` (§8) are all set: fetch the seed via
      `AWSSDK.S3` — `AmazonS3Client` configured with `ServiceURL =
      OBJECT_STORAGE_API_ENDPOINT` (must include the `https://` scheme) and
      `ForcePathStyle = true` (required for Liara's S3-compatible endpoint,
@@ -219,7 +250,7 @@ trigger, seed-first with live-crawl fallback). Concrete mechanics:
      `GetObjectAsync(OBJECT_STORAGE_BUCKET_NAME, SEED_OBJECT_KEY)`, stream to a
      temp file, `pg_restore` into the database, log success/failure. On
      success, done — skip the crawl below entirely.
-  4. If `0` and Object Storage isn't fully configured, or the fetch/restore
+  3. If `0` and Object Storage isn't fully configured, or the fetch/restore
      failed: run the live crawl pipeline below.
 - **Enumerate pages**: fetch `DOCS_SITEMAP_URL`
   (default `https://docs.liara.ir/sitemap.xml`; point at
@@ -527,8 +558,8 @@ IEmbeddingService:
   equivalent if the fallback manual-prefix path is used instead, where the
   prefixed text itself already differs).
 - No extra L2-normalization step needed — the model's output is already
-  normalized (01-architecture.md §5), so pgvector's `vector_cosine_ops`
-  index (§1) is used as-is.
+  normalized (01-architecture.md §5); retrieval uses pgvector's `<=>`
+  cosine-distance operator directly (exact scan, no ANN index — §1, §11).
 
 ## 8. Configuration reference
 
@@ -563,6 +594,13 @@ mechanics (`.env.example` vs `.env`, `.gitignore`).
 | `OBJECT_STORAGE_ACCESS_KEY` / `OBJECT_STORAGE_SECRET_KEY` | §2a — S3-compatible credentials (`BasicAWSCredentials`) | — |
 | `OBJECT_STORAGE_BUCKET_NAME` | §2a — bucket holding the seed | — |
 | `SEED_OBJECT_KEY` | §2a — object key (filename) of the seed dump within the bucket, tried before falling back to a live crawl | e.g. `doc_chunks_seed.dump`; unset locally unless testing the seed path |
+
+These five Object Storage vars are conditional as a *group*, not individually
+optional: **all five set, or none set** — validate this at startup alongside
+every other `Require`/`Optional` check (throw with the same
+missing-config error if 1–4 of the 5 are set but not all 5). A typo'd partial
+config should fail fast like any other misconfiguration, not silently
+degrade to the slower live-crawl fallback at ingestion time.
 | `DOCS_SITEMAP_URL` | §2a ingestion (live-crawl fallback, or point at `localhost:3001` when generating a seed) | `https://docs.liara.ir/sitemap.xml` |
 | `CRAWL_CONCURRENCY` | §2a — bounded worker pool size (live-crawl fallback only) | `5` |
 | `CRAWL_DELAY_MS` | §2a — per-worker delay between its own requests (live-crawl fallback only) | `300` |

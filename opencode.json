@@ -12,7 +12,7 @@
   "agent": {
     "backend": {
       "description": "Implements backend/ (.NET / Agent Framework) per specs/02-technical-spec.md and specs/03-plan.md. Never edits frontend/ or specs/.",
-      "model": "opencode-go/glm-5.3",
+      "model": "opencode-go/glm-5.3-flash",
       "permission": {
         "edit": {
           "*": "deny",

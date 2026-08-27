@@ -77,11 +77,12 @@ invoke at deploy time. Build `backend/src/Ingestion/` and wire it as a
 hosted service, shared by both the seed path and the live-crawl fallback:
 
 1. **`IngestionBackgroundService`** (`BackgroundService`, registered in
-   `Api`'s `Program.cs`): on startup, apply migrations
-   (`Database.MigrateAsync()`), check `doc_chunks` row count — skip if
-   already populated; if empty, try fetching the seed from Liara Object
-   Storage via `AWSSDK.S3` first, fall back to the live crawl only if
-   `OBJECT_STORAGE_*` isn't fully configured or the fetch fails
+   `Api`'s `Program.cs`): migrations and the embedding-dimension guard
+   already run in `Program.cs` before `app.Run()` (Phase 1, `DbSchemaGuards`)
+   — don't call `MigrateAsync()` again here. On startup, check `doc_chunks`
+   row count — skip if already populated; if empty, try fetching the seed
+   from Liara Object Storage via `AWSSDK.S3` first, fall back to the live
+   crawl only if `OBJECT_STORAGE_*` isn't fully configured or the fetch fails
    (02-technical-spec §2a startup sequence).
 2. **Crawl** (AngleSharp): fetch `DOCS_SITEMAP_URL`, filter by taxonomy path
    prefixes, fetch+parse each page (`h1` title, `h2`–`h6` section
@@ -116,10 +117,14 @@ hosted service, shared by both the seed path and the live-crawl fallback:
    - Set `OBJECT_STORAGE_*` and `SEED_OBJECT_KEY` wherever the app runs
      (local `.env` and Liara env vars, Phase 7).
 5. **QA pass** (01-architecture §4 QA step + §11 risk):
-   - **Verify the actual returned embedding dimension is 2048** before
-     locking in `EMBED_DIM` at migration time (one source suggested 4096,
-     likely describing the 8B variant — confirm against what the API
-     actually returns for the 1B model before trusting either number).
+   - **Confirm the actual returned embedding dimension is 2048** — `EMBED_DIM`
+     is already locked in and the `InitialCreate` migration already bakes
+     `vector(2048)` (Phase 1), and `Program.cs` now throws at startup on a
+     mismatch (`DbSchemaGuards.VerifyEmbeddingDimensionAsync`), so this QA
+     step confirms the assumption still holds against the live API rather
+     than gating anything — if the real embedding call ever returns a
+     different length, ingestion's first insert will fail loudly against
+     that guard rather than silently corrupting the index.
    - **Verify `input_type` is actually effective**: `IEmbeddingService`
      (02-technical-spec §7a) sends `input_type: search_document` for chunks
      and `search_query` for queries — this is easy to silently skip since
