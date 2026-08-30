@@ -11,9 +11,12 @@ No longer a hard blocker on other phases — all model choices are config values
 (02-technical-spec.md §8), not code, so build proceeds now with placeholders and gets the
 real values swapped in later:
 
-- Chat model + router model: placeholder `openai/gpt-4.1-mini` /
-  `openai/gpt-4o-mini` via the Liara AI Gateway (OpenAI-wire-compatible per
-  01-architecture.md §3) — swap for the real choice whenever decided.
+- ~~Chat model + router model: placeholder `openai/gpt-4.1-mini` /
+  `openai/gpt-4o-mini` via the Liara AI Gateway~~ — **decided**: both on
+  OpenCode Go (`https://opencode.ai/zen/go/v1`, model `deepseek-v4-flash`),
+  OpenAI-wire-compatible per 01-architecture.md §3. (Previously AvalAI;
+  switched when that key expired — config-only swap, see 02-technical-spec
+  §8.)
 - Embedding model: `nvidia/nemotron-3-embed-1b:free` via OpenRouter — #1 on
   RTEB, explicitly Persian-benchmarked, free — `EMBED_DIM=2048`. Needs its
   own `EMBEDDING_API_KEY` (an OpenRouter key, separate from the chat

@@ -1,7 +1,14 @@
 using LiaraDocsAssistant.Api.Configuration;
 using LiaraDocsAssistant.Api.Middleware;
 using LiaraDocsAssistant.Data;
+using LiaraDocsAssistant.Ingestion;
+using LiaraDocsAssistant.Ingestion.Chunking;
+using LiaraDocsAssistant.Ingestion.Crawling;
+using LiaraDocsAssistant.Ingestion.Embedding;
+using LiaraDocsAssistant.Ingestion.Persistence;
+using LiaraDocsAssistant.Ingestion.Seed;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Http.Resilience;
 using Serilog;
 using Serilog.Events;
 using Serilog.Formatting.Compact;
@@ -42,6 +49,64 @@ try
         .WithOrigins(options.Api.CorsAllowedOrigins)
         .AllowAnyHeader()
         .AllowAnyMethod()));
+
+    builder.Services.AddHttpClient("embeddings", client =>
+        {
+            client.BaseAddress = new Uri(options.Embedding.BaseUrl);
+            client.Timeout = Timeout.InfiniteTimeSpan;
+        })
+        .AddStandardResilienceHandler(resilience =>
+        {
+            resilience.AttemptTimeout.Timeout = TimeSpan.FromMinutes(2);
+            resilience.TotalRequestTimeout.Timeout = TimeSpan.FromMinutes(6);
+            resilience.Retry.MaxRetryAttempts = 4;
+            resilience.CircuitBreaker.SamplingDuration = TimeSpan.FromMinutes(5);
+        });
+
+    builder.Services.AddHttpClient("docs-crawler", client =>
+        {
+            client.Timeout = Timeout.InfiniteTimeSpan;
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("LiaraDocsAssistant-Ingestion/1.0");
+        })
+        .AddStandardResilienceHandler();
+
+    builder.Services.AddSingleton<OpenAiCompatibleEmbeddingService>((sp) =>
+    {
+        var httpClientFactory = sp.GetRequiredService<IHttpClientFactory>();
+        return new OpenAiCompatibleEmbeddingService(
+            httpClientFactory.CreateClient("embeddings"),
+            options.Embedding.ModelName,
+            options.Embedding.ApiKey,
+            options.Embedding.UseInputType,
+            sp.GetRequiredService<ILogger<OpenAiCompatibleEmbeddingService>>());
+    });
+
+    builder.Services.AddSingleton<IEmbeddingService>(sp => new CachedEmbeddingService(
+        sp.GetRequiredService<OpenAiCompatibleEmbeddingService>(),
+        sp.GetRequiredService<IConnectionMultiplexer>().GetDatabase(),
+        sp.GetRequiredService<ILogger<CachedEmbeddingService>>()));
+
+    builder.Services.AddSingleton(new IngestionSettings(
+        options.Embedding.Dim,
+        options.Embedding.UseInputType,
+        options.Ingestion.EmbedBatchSize,
+        options.Ingestion.SitemapUrl,
+        options.Ingestion.CrawlConcurrency,
+        options.Ingestion.CrawlDelayMs,
+        options.ObjectStorage.Endpoint,
+        options.ObjectStorage.AccessKey,
+        options.ObjectStorage.SecretKey,
+        options.ObjectStorage.BucketName,
+        options.ObjectStorage.SeedObjectKey));
+
+    builder.Services.AddSingleton<DocsSiteCrawler>(sp => new DocsSiteCrawler(
+        sp.GetRequiredService<IHttpClientFactory>().CreateClient("docs-crawler")));
+
+    builder.Services.AddSingleton<ISectionChunker>(new SectionChunker());
+    builder.Services.AddSingleton<SeedRestoreService>();
+    builder.Services.AddScoped<DocChunkStore>();
+
+    builder.Services.AddHostedService<IngestionBackgroundService>();
 
     var app = builder.Build();
 

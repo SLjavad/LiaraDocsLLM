@@ -12,7 +12,7 @@ public static class LocalEnvFile
         var path = Find();
         if (path is null) return;
 
-        Env.Load(path);
+        Env.Load(path, new LoadOptions().NoClobber());
     }
 
     public static string? Find()
