@@ -5,64 +5,68 @@ using Pgvector;
 
 namespace LiaraDocsAssistant.Ingestion.Persistence;
 
+public sealed record ExistingChunkRow(Guid Id, string? Anchor, string ContentHash);
+
 public sealed class DocChunkStore(AppDbContext db)
 {
     public async Task<bool> IsPopulatedAsync(CancellationToken ct) =>
         await db.DocChunks.CountAsync(ct) > 0;
 
-    public async Task<Dictionary<(string?, string), byte>> GetExistingHashesAsync(string pageUrl, CancellationToken ct)
+    public async Task<IReadOnlyList<ExistingChunkRow>> GetExistingChunksAsync(string pageUrl, CancellationToken ct)
     {
         var rows = await db.DocChunks
             .AsNoTracking()
             .Where(c => c.Url == pageUrl)
-            .Select(c => new { c.Anchor, c.ContentHash })
+            .Select(c => new { c.Id, c.Anchor, c.ContentHash })
             .ToListAsync(ct);
 
-        return rows.ToDictionary(r => (r.Anchor, r.ContentHash), _ => (byte)0);
+        return [.. rows.Select(r => new ExistingChunkRow(r.Id, r.Anchor, r.ContentHash))];
     }
 
     public async Task<PageWriteResult> WritePageChunksAsync(
         IReadOnlyList<ChunkDraft> drafts,
+        IReadOnlyList<ExistingChunkRow> existingRows,
         Func<ChunkDraft, Vector?> embeddingFor,
         CancellationToken ct)
     {
-        var written = 0;
-        var skipped = 0;
-
-        if (drafts.Count == 0)
+        var dedupedDrafts = DedupeDrafts(drafts);
+        if (dedupedDrafts.Count == 0)
         {
             return new PageWriteResult(0, 0);
         }
 
         await using var transaction = await db.Database.BeginTransactionAsync(ct);
 
-        var pageUrl = drafts[0].Url;
-        var existingRows = await db.DocChunks
-            .Where(c => c.Url == pageUrl)
-            .Select(c => new { c.Id, c.Anchor, c.ContentHash })
-            .ToListAsync(ct);
+        var unclaimed = new HashSet<ExistingChunkRow>(existingRows);
+        var rowsToUpdate = new List<(ExistingChunkRow Row, ChunkDraft Draft, Vector Embedding)>();
+        var written = 0;
+        var skipped = 0;
 
-        foreach (var draft in drafts)
+        foreach (var draft in dedupedDrafts)
         {
             var embedding = embeddingFor(draft);
             if (embedding is null)
             {
-                skipped++;
                 continue;
             }
 
-            var match = existingRows.FirstOrDefault(e =>
-                e.Anchor == draft.Anchor && string.Equals(e.ContentHash, draft.ContentHash, StringComparison.Ordinal));
-            if (match is not null)
+            var unchanged = unclaimed.FirstOrDefault(e =>
+                e.Anchor == draft.Anchor &&
+                string.Equals(e.ContentHash, draft.ContentHash, StringComparison.Ordinal));
+            if (unchanged is not null)
             {
+                unclaimed.Remove(unchanged);
                 skipped++;
                 continue;
             }
 
-            var row = existingRows.FirstOrDefault(e =>
-                e.Anchor == draft.Anchor && !string.Equals(e.ContentHash, draft.ContentHash, StringComparison.Ordinal));
-
-            if (row is null)
+            var stale = unclaimed.FirstOrDefault(e => e.Anchor == draft.Anchor);
+            if (stale is not null)
+            {
+                unclaimed.Remove(stale);
+                rowsToUpdate.Add((stale, draft, embedding));
+            }
+            else
             {
                 db.DocChunks.Add(new LiaraDocsAssistant.Data.Entities.DocChunk
                 {
@@ -75,26 +79,53 @@ public sealed class DocChunkStore(AppDbContext db)
                     Embedding = embedding,
                     ContentHash = draft.ContentHash,
                 });
+                written++;
             }
-            else
+        }
+
+        var trackedUpdates = rowsToUpdate.Count > 0
+            ? await db.DocChunks
+                .Where(c => rowsToUpdate.Select(r => r.Row.Id).Contains(c.Id))
+                .ToDictionaryAsync(c => c.Id, ct)
+            : [];
+
+        foreach (var (row, draft, embedding) in rowsToUpdate)
+        {
+            if (!trackedUpdates.TryGetValue(row.Id, out var tracked))
             {
-                var tracked = await db.DocChunks.SingleAsync(c => c.Id == row.Id, ct);
-                tracked.Title = draft.Title;
-                tracked.Category = draft.CategoryId;
-                tracked.Body = draft.Body;
-                tracked.TokenCount = draft.TokenCount;
-                tracked.Embedding = embedding;
-                tracked.ContentHash = draft.ContentHash;
-                tracked.UpdatedAt = DateTimeOffset.UtcNow;
+                throw new InvalidOperationException(
+                    $"doc_chunks row {row.Id} vanished between the read and update of page {draft.Url}");
             }
 
+            tracked.Title = draft.Title;
+            tracked.Category = draft.CategoryId;
+            tracked.Body = draft.Body;
+            tracked.TokenCount = draft.TokenCount;
+            tracked.Embedding = embedding;
+            tracked.ContentHash = draft.ContentHash;
+            tracked.UpdatedAt = DateTimeOffset.UtcNow;
             written++;
         }
 
         await db.SaveChangesAsync(ct);
         await transaction.CommitAsync(ct);
+        db.ChangeTracker.Clear();
 
         return new PageWriteResult(written, skipped);
+    }
+
+    private static List<ChunkDraft> DedupeDrafts(IReadOnlyList<ChunkDraft> drafts)
+    {
+        var seen = new HashSet<(string?, string)>();
+        var result = new List<ChunkDraft>(drafts.Count);
+        foreach (var draft in drafts)
+        {
+            if (seen.Add((draft.Anchor, draft.ContentHash)))
+            {
+                result.Add(draft);
+            }
+        }
+        return result;
     }
 }
 

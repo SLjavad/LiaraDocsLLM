@@ -523,17 +523,27 @@ Static taxonomy from §2, used by the agent for disambiguating questions.
 ## 7a. Embedding service — query/document signaling
 
 `nemotron-3-embed-1b` is an asymmetric retrieval model requiring
-query-vs-document signaling (01-architecture.md §5). **Primary mechanism**:
-OpenRouter's documented `input_type` request parameter (`search_query` /
-`search_document`) — not manual text-prefix concatenation. Encapsulate this
+query-vs-document signaling (01-architecture.md §5). **Mechanism, empirically
+confirmed against the live OpenRouter API in Phase 2 QA (not assumed from
+docs)**: send an `input_type` field valued `"query"` or `"passage"` — *not*
+`search_query`/`search_document` as OpenRouter's general API reference
+describes for other embedding models. Direct test evidence:
+`input_type: "search_document"` → `HTTP 400 "Unsupported input_type
+\"search_document\". Nvidia embeddings only support \"query\" and
+\"passage\"."`; `"passage"` and `"query"` both → `HTTP 200`, with visibly
+different vectors (confirming the model actually differentiates them);
+omitting `input_type` entirely produces a vector identical (to float
+precision) to `input_type: "query"` — i.e. the API defaults to query mode,
+not document mode, when unset. This is exactly why the field must always be
+sent explicitly for chunks, never left to the default. Encapsulate this
 behind two methods so no call site has to remember it:
 
 ```
 IEmbeddingService:
   EmbedDocumentAsync(text: string) -> float[]
-    // request body includes input_type: "search_document" if EMBEDDING_USE_INPUT_TYPE
+    // request body includes input_type: "passage" if EMBEDDING_USE_INPUT_TYPE
   EmbedQueryAsync(text: string) -> float[]
-    // request body includes input_type: "search_query" if EMBEDDING_USE_INPUT_TYPE
+    // request body includes input_type: "query" if EMBEDDING_USE_INPUT_TYPE
 ```
 
 - `EmbedDocumentAsync` is used by ingestion (§2a) for every chunk.
@@ -543,14 +553,10 @@ IEmbeddingService:
   on** — the `text-embedding-3-small` fallback doesn't support this
   parameter, so switching providers means setting this to `false`, a
   config change, not a code change (NFR2 black-box model config principle).
-- **Verify empirically, don't trust the docs alone** (01-architecture.md §5):
-  neither OpenRouter's nor NVIDIA's documentation confirms `input_type` is
-  correctly honored for this specific model when proxied through OpenRouter.
-  Phase 2 QA must compare embeddings/ranking with `input_type` set vs.
-  unset on a known query/chunk pair. If it turns out to have no effect,
-  fall back to manual `"query: "`/`"passage: "` text-prefix concatenation
-  (per NVIDIA's model card) instead — same `IEmbeddingService` interface,
-  just a different implementation inside the two methods.
+- The manual `"query: "`/`"passage: "` text-prefix fallback (per NVIDIA's
+  model card) is no longer needed — the `input_type` mechanism is confirmed
+  working end-to-end for this model through OpenRouter, so there's no
+  contingency path to keep around.
 - **Cache key correctness** (§3 `cache:embedding:{hash(text)}`): the hash
   must incorporate `input_type`, not just the raw text — a query and a
   document embedding of the identical string are different vectors and must

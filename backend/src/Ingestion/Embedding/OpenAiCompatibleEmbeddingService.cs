@@ -33,6 +33,11 @@ public sealed class OpenAiCompatibleEmbeddingService(
             return [];
         }
 
+        return await HalveAndRetryAsync(texts, ct);
+    }
+
+    private async Task<List<float[]?>> HalveAndRetryAsync(IReadOnlyList<string> texts, CancellationToken ct)
+    {
         try
         {
             var embedded = await EmbedBatchInternalAsync(texts, InputType.Document, ct);
@@ -40,33 +45,36 @@ public sealed class OpenAiCompatibleEmbeddingService(
         }
         catch (SizeRelatedException ex)
         {
-            logger.LogWarning(ex,
-                "Embedding provider rejected a batch of {Count} items as too large; halving",
-                texts.Count);
-            return await HalveAndRetryAsync(texts, ct);
-        }
-    }
-
-    private async Task<List<float[]?>> HalveAndRetryAsync(IReadOnlyList<string> texts, CancellationToken ct)
-    {
-        if (texts.Count == 1)
-        {
-            try
+            if (texts.Count == 1)
             {
-                var single = await EmbedBatchInternalAsync([texts[0]], InputType.Document, ct);
-                return single;
-            }
-            catch (Exception ex)
-            {
-                logger.LogError(ex, "Single-text embedding failed after halving to the minimum; skipping item");
+                logger.LogError(
+                    ex,
+                    "Embedding rejected a single item as too large after halving to the minimum; skipping item");
                 return [null];
             }
-        }
 
-        var midpoint = texts.Count / 2;
-        var left = await HalveAndRetryAsync(texts.Take(midpoint).ToList(), ct);
-        var right = await HalveAndRetryAsync(texts.Skip(midpoint).ToList(), ct);
-        return [.. left, .. right];
+            logger.LogWarning(
+                ex,
+                "Embedding provider rejected a batch of {Count} items as too large; halving and retrying each half at the smaller size",
+                texts.Count);
+
+            var midpoint = texts.Count / 2;
+            var left = await HalveAndRetryAsync(texts.Take(midpoint).ToList(), ct);
+            var right = await HalveAndRetryAsync(texts.Skip(midpoint).ToList(), ct);
+            return [.. left, .. right];
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(
+                ex,
+                "Embedding batch of {Count} items failed with a non-size error; skipping {Count} items",
+                texts.Count, texts.Count);
+            return [.. texts.Select(_ => (float[]?)null)];
+        }
     }
 
     private static float[] Single(List<float[]?> result, string kind)
@@ -160,17 +168,12 @@ public sealed class OpenAiCompatibleEmbeddingService(
 
     private static bool IsPlausiblySizeRelated(HttpStatusCode statusCode, string detail)
     {
-        if ((int)statusCode is not (400 or 404 or 413 or 422 or 431))
+        if ((int)statusCode is >= 400 and < 500)
         {
-            return false;
+            return (int)statusCode is not (401 or 403);
         }
 
-        return (int)statusCode == 413 ||
-               detail.Contains("too large", StringComparison.OrdinalIgnoreCase) ||
-               detail.Contains("too long", StringComparison.OrdinalIgnoreCase) ||
-               detail.Contains("too many input", StringComparison.OrdinalIgnoreCase) ||
-               detail.Contains("exceeds", StringComparison.OrdinalIgnoreCase) ||
-               detail.Contains("maximum", StringComparison.OrdinalIgnoreCase);
+        return false;
     }
 
     private enum InputType { Document, Query }

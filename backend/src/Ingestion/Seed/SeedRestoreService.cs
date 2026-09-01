@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using Npgsql;
 using System.Diagnostics;
 using System.Text.Json;
 using Amazon.S3;
@@ -26,7 +27,13 @@ public sealed class SeedRestoreService(
 
             logger.LogInformation("Seed dump downloaded ({SizeBytes} bytes); running pg_restore", new FileInfo(tempFile).Length);
 
-            var exitCode = RunPgRestore(postgresConnectionString, tempFile, out var output, out var errors);
+            if (!TryBuildLibpqUri(postgresConnectionString, out var libpqUri, out var convertError))
+            {
+                logger.LogError("Could not convert POSTGRES_CONNECTION_STRING to a libpq URI for pg_restore: {Error}", convertError);
+                return false;
+            }
+
+            var exitCode = RunPgRestore(libpqUri, tempFile, out var output, out var errors);
             if (exitCode != 0)
             {
                 logger.LogError("pg_restore failed with exit {ExitCode}: {Errors}", exitCode, Truncate(errors));
@@ -78,7 +85,55 @@ public sealed class SeedRestoreService(
         await response.ResponseStream.CopyToAsync(fileStream, ct);
     }
 
-    private int RunPgRestore(string connectionString, string dumpFile, out string output, out string errors)
+    public static bool TryBuildLibpqUri(string npgsqlConnectionString, out string uri, out string error)
+    {
+        uri = string.Empty;
+        error = string.Empty;
+
+        NpgsqlConnectionStringBuilder builder;
+        try
+        {
+            builder = new NpgsqlConnectionStringBuilder(npgsqlConnectionString);
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(builder.Host))
+        {
+            error = "connection string is missing Host";
+            return false;
+        }
+        if (string.IsNullOrWhiteSpace(builder.Database))
+        {
+            error = "connection string is missing Database";
+            return false;
+        }
+
+        var sb = new System.Text.StringBuilder("postgresql://");
+        if (!string.IsNullOrWhiteSpace(builder.Username))
+        {
+            sb.Append(Uri.EscapeDataString(builder.Username));
+            if (!string.IsNullOrEmpty(builder.Password))
+            {
+                sb.Append(':').Append(Uri.EscapeDataString(builder.Password));
+            }
+            sb.Append('@');
+        }
+        sb.Append(builder.Host);
+        if (builder.Port != 5432)
+        {
+            sb.Append(':').Append(builder.Port);
+        }
+        sb.Append('/').Append(Uri.EscapeDataString(builder.Database));
+
+        uri = sb.ToString();
+        return true;
+    }
+
+    private int RunPgRestore(string libpqUri, string dumpFile, out string output, out string errors)
     {
         using var process = new Process
         {
@@ -90,7 +145,7 @@ public sealed class SeedRestoreService(
                     "--data-only",
                     "--table=doc_chunks",
                     "--no-owner",
-                    "--dbname=" + connectionString,
+                    "--dbname=" + libpqUri,
                     dumpFile,
                 },
                 RedirectStandardOutput = true,

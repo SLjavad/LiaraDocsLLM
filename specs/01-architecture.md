@@ -240,23 +240,23 @@ the exact section, hurting AC1 ("providing appropriate sources") and AC2
   NVIDIA's own model card) — it's an asymmetric retrieval model trained to
   distinguish search queries from indexed document text. Getting this wrong
   doesn't error, it silently degrades ranking quality — a dangerous class of
-  bug since nothing looks broken. **Mechanism**: OpenRouter's embeddings API
-  documents an `input_type` request parameter (`search_query` /
-  `search_document`, checked directly against OpenRouter's detailed API
-  reference, not a secondary source) — use that, not manual text-prefix
-  concatenation. This mirrors NVIDIA's own recommended access path (their
-  `/v2/embed` endpoint also auto-applies the model's prefix convention via an
-  `input_type`-style parameter), so `input_type` is the more likely-correct
-  mechanism than guessing at raw string surgery. **Residual uncertainty**:
-  neither OpenRouter's nor NVIDIA's docs confirm whether OpenRouter's
-  `input_type` is actually honored correctly for this specific model when
-  proxied — that mapping happens inside whatever backend OpenRouter routes
-  to, which isn't documented. This is exactly why the empirical check in
-  Phase 2 QA matters (compare embeddings/ranking with `input_type` set vs.
-  unset) — it resolves what the docs can't. If QA shows `input_type` isn't
-  effective, the documented fallback is manual `"query: "`/`"passage: "` text
-  prefixing (per NVIDIA's model card) instead — not built by default, just
-  the contingency if the primary mechanism turns out not to work.
+  bug since nothing looks broken. **Mechanism, empirically confirmed against
+  the live OpenRouter API in Phase 2** (not just read from docs — the
+  general OpenRouter API reference's `search_query`/`search_document`
+  convention turned out to describe a different model family, not this one):
+  send `input_type: "query"` or `input_type: "passage"`.
+  `input_type: "search_document"` gets a hard `HTTP 400` back from
+  OpenRouter with the message *"Unsupported input_type. Nvidia embeddings
+  only support \"query\" and \"passage\""* — i.e. the originally-documented
+  values don't just rank worse, they're outright rejected, which made this
+  easy to catch rather than a silent quality regression. `"query"` and
+  `"passage"` both return `200` with visibly different vectors (confirming
+  the model does differentiate them), and omitting `input_type` entirely
+  defaults to the same vector as `"query"` — so it must always be sent
+  explicitly for document chunks, never left unset. No residual uncertainty
+  left here and no fallback needed; the manual `"query: "`/`"passage: "`
+  text-prefix contingency this section used to describe is moot now that
+  the real mechanism is confirmed working end-to-end.
   Provider-specific either way: the `text-embedding-3-small` fallback
   doesn't use this convention, so this must be gated per-provider, not
   hardcoded on. Embeddings from this model are already L2-normalized

@@ -24,9 +24,10 @@ public sealed class CachedEmbeddingService(
         var results = new float[texts.Count][];
         var misses = new List<(int Position, string Text)>();
 
+        var cachedVectors = await ReadCacheBatchAsync(texts, ct);
         for (var i = 0; i < texts.Count; i++)
         {
-            if (await TryReadCacheAsync("search_document", texts[i], ct) is { } cached)
+            if (cachedVectors[i] is { } cached)
             {
                 results[i] = cached;
             }
@@ -41,6 +42,7 @@ public sealed class CachedEmbeddingService(
             var embedded = await inner.EmbedDocumentsBatchAsync(
                 [.. misses.Select(m => m.Text)], ct);
 
+            var writes = new List<Task>();
             for (var j = 0; j < misses.Count; j++)
             {
                 var vector = embedded[j];
@@ -49,8 +51,9 @@ public sealed class CachedEmbeddingService(
                     continue;
                 }
                 results[misses[j].Position] = vector;
-                await WriteCacheAsync("search_document", misses[j].Text, vector, ct);
+                writes.Add(WriteCacheAsync("search_document", misses[j].Text, vector, ct));
             }
+            await Task.WhenAll(writes);
         }
 
         return results;
@@ -76,6 +79,28 @@ public sealed class CachedEmbeddingService(
     {
         var hash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes($"{inputType}:{text}")));
         return $"cache:embedding:{hash}";
+    }
+
+    private async Task<float[]?[]> ReadCacheBatchAsync(IReadOnlyList<string> texts, CancellationToken ct)
+    {
+        var fallback = new float[]?[texts.Count];
+        try
+        {
+            var keys = texts.Select(t => (RedisKey)CacheKey("search_document", t)).ToArray();
+            var jsons = await redis.StringGetAsync(keys);
+            for (var i = 0; i < texts.Count; i++)
+            {
+                if (!jsons[i].IsNullOrEmpty)
+                {
+                    fallback[i] = JsonSerializer.Deserialize<float[]>(jsons[i].ToString());
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "embedding cache batch read failed; falling through to the live embedding calls");
+        }
+        return fallback;
     }
 
     private async Task<float[]?> TryReadCacheAsync(string inputType, string text, CancellationToken ct)

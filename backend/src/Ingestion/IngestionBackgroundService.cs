@@ -75,7 +75,9 @@ public sealed class IngestionBackgroundService(
 
     private async Task RunLiveCrawlAsync(Stopwatch stopwatch, CancellationToken ct)
     {
-        var urls = await crawler.EnumerateUrlsAsync(settings.DocsSitemapUrl, ct);
+        var urls = (await crawler.EnumerateUrlsAsync(settings.DocsSitemapUrl, ct))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
         logger.LogInformation(
             "Sitemap enumeration complete: {MatchedCount} pages matched the taxonomy from {SitemapUrl}",
             urls.Count, settings.DocsSitemapUrl);
@@ -163,10 +165,12 @@ public sealed class IngestionBackgroundService(
             return 0;
         }
 
-        var unchangedHashes = await store.GetExistingHashesAsync(page.Url, ct);
+        var existingRows = await store.GetExistingChunksAsync(page.Url, ct);
+        var existingKeySet = existingRows
+            .Select(r => (r.Anchor, r.ContentHash))
+            .ToHashSet();
         var needed = drafts
-            .Where(d => !unchangedHashes.TryGetValue(
-                (d.Anchor, d.ContentHash), out _))
+            .Where(d => !existingKeySet.Contains((d.Anchor, d.ContentHash)))
             .ToList();
         if (needed.Count == 0)
         {
@@ -202,6 +206,7 @@ public sealed class IngestionBackgroundService(
 
         var result = await store.WritePageChunksAsync(
             drafts,
+            existingRows,
             draft => embeddingMap.TryGetValue(draft.Body, out var vector) ? vector : null,
             ct);
 

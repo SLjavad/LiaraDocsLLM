@@ -69,7 +69,7 @@ public sealed class SectionChunker(int minTokens = 200, int maxTokens = 800) : I
         pendingSmall.Clear();
     }
 
-    private static void AddSplitChunks(
+    private void AddSplitChunks(
         List<ChunkDraft> chunks,
         Crawling.CrawledPage page,
         string sectionTitle,
@@ -84,7 +84,7 @@ public sealed class SectionChunker(int minTokens = 200, int maxTokens = 800) : I
         {
             var paragraphTokens = EstimateTokens(paragraph);
 
-            if (current.Count > 0 && currentTokens + paragraphTokens > 800)
+            if (current.Count > 0 && currentTokens + paragraphTokens > maxTokens)
             {
                 parts.Add(current);
                 current = [];
