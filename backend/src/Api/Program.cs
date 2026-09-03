@@ -1,12 +1,18 @@
+using LiaraDocsAssistant.Api.Caching;
 using LiaraDocsAssistant.Api.Configuration;
+using LiaraDocsAssistant.Api.Endpoints;
 using LiaraDocsAssistant.Api.Middleware;
+using LiaraDocsAssistant.Api.RateLimiting;
 using LiaraDocsAssistant.Data;
+using LiaraDocsAssistant.Data.Redis;
 using LiaraDocsAssistant.Ingestion;
 using LiaraDocsAssistant.Ingestion.Chunking;
 using LiaraDocsAssistant.Ingestion.Crawling;
 using LiaraDocsAssistant.Ingestion.Embedding;
 using LiaraDocsAssistant.Ingestion.Persistence;
 using LiaraDocsAssistant.Ingestion.Seed;
+using LiaraDocsAssistant.Retrieval;
+using LiaraDocsAssistant.Retrieval.Routing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Http.Resilience;
 using Serilog;
@@ -78,7 +84,8 @@ try
             options.Embedding.ModelName,
             options.Embedding.ApiKey,
             options.Embedding.UseInputType,
-            sp.GetRequiredService<ILogger<OpenAiCompatibleEmbeddingService>>());
+            sp.GetRequiredService<ILogger<OpenAiCompatibleEmbeddingService>>(),
+            sp.GetRequiredService<ISpendGuard>());
     });
 
     builder.Services.AddSingleton<IEmbeddingService>(sp => new CachedEmbeddingService(
@@ -105,6 +112,40 @@ try
     builder.Services.AddSingleton<ISectionChunker>(new SectionChunker());
     builder.Services.AddSingleton<SeedRestoreService>();
     builder.Services.AddScoped<DocChunkStore>();
+
+    builder.Services.AddHttpClient("chat", client =>
+        {
+            client.BaseAddress = new Uri(options.ChatModel.BaseUrl.TrimEnd('/') + "/");
+            client.Timeout = Timeout.InfiniteTimeSpan;
+        })
+        .AddStandardResilienceHandler(resilience =>
+        {
+            resilience.AttemptTimeout.Timeout = TimeSpan.FromSeconds(45);
+            resilience.TotalRequestTimeout.Timeout = TimeSpan.FromMinutes(2);
+            resilience.Retry.MaxRetryAttempts = 3;
+            resilience.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(120);
+        });
+
+    builder.Services.AddSingleton<ISpendGuard>(sp => new RedisSpendGuard(
+        sp.GetRequiredService<IConnectionMultiplexer>(),
+        options.DailySpendBudgetTokens));
+
+    builder.Services.AddSingleton<IRouterService>(sp => new RouterService(
+        sp.GetRequiredService<IHttpClientFactory>().CreateClient("chat"),
+        options.ChatModel.RouterModelName,
+        options.ChatModel.ApiKey,
+        sp.GetRequiredService<ISpendGuard>(),
+        sp.GetRequiredService<ILogger<RouterService>>()));
+
+    builder.Services.AddScoped<IRetrievalService>(sp => new HybridRetrievalService(
+        sp.GetRequiredService<AppDbContext>(),
+        sp.GetRequiredService<global::LiaraDocsAssistant.Ingestion.Embedding.IEmbeddingService>(),
+        options.Retrieval.TopK,
+        options.Retrieval.GroundednessThreshold,
+        sp.GetRequiredService<ILogger<HybridRetrievalService>>()));
+
+    builder.Services.AddSingleton<RateLimiter>();
+    builder.Services.AddSingleton<SearchCache>();
 
     builder.Services.AddHostedService<IngestionBackgroundService>();
 
@@ -135,6 +176,8 @@ try
     app.UseSerilogRequestLogging();
     app.UseMiddleware<GlobalExceptionMiddleware>();
     app.UseCors();
+
+    app.MapSearchEndpoints();
 
     app.MapGet("/health", async (AppDbContext db, ILogger<Program> logger, CancellationToken ct) =>
     {

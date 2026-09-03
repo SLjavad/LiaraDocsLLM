@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using LiaraDocsAssistant.Data.Redis;
 using StackExchange.Redis;
 
 namespace LiaraDocsAssistant.Ingestion.Embedding;
@@ -75,11 +76,8 @@ public sealed class CachedEmbeddingService(
         return vector;
     }
 
-    internal static string CacheKey(string inputType, string text)
-    {
-        var hash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes($"{inputType}:{text}")));
-        return $"cache:embedding:{hash}";
-    }
+    internal static string CacheKey(string inputType, string text) =>
+        RedisKeys.CacheEmbedding(Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes($"{inputType}:{text}"))));
 
     private async Task<float[]?[]> ReadCacheBatchAsync(IReadOnlyList<string> texts, CancellationToken ct)
     {

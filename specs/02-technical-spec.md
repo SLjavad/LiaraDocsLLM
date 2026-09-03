@@ -330,6 +330,10 @@ classification — e.g. a bare "why?" following an in-scope answer is in-scope).
   prompt must state this domain boundary explicitly, not rely on keyword/
   mention matching. `recentMessages` is for resolving follow-ups/pronouns, not
   for gating whether a technical question counts as in-scope.
+- Call the router with `temperature: 0` — this is a strict classification
+  task with one correct JSON answer, not open-ended generation; determinism
+  is worth more here than sampling diversity, and it makes golden-set QA
+  (`01-architecture.md` §13) reproducible.
 
 ## 5. `/api/chat` orchestration & triage state
 
@@ -364,8 +368,14 @@ its log lines, per NFR3 (01-architecture.md §9).
 
 Request:
 ```json
-{ "sessionId": "uuid|null", "query": "string", "category": "string|null", "platform": "string|null" }
+{ "sessionId": "uuid|null", "query": "string", "category": "string|null", "platform": "string|null", "locale": "fa|en|null" }
 ```
+`locale` is optional — send the frontend's `SessionProvider` locale value
+(`05-frontend-plan.md` §2) so the response's `message`/error text matches
+what the user actually set, rather than a guess. When absent, the backend
+falls back to detecting the query's own script (Persian-block characters →
+`fa`) — a reasonable default, but a real user-set preference should win
+when available.
 Response (in-scope):
 ```json
 {

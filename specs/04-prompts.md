@@ -250,6 +250,16 @@ the literal strings returned when the router (§2 above) classifies a message.
 | `jailbreak_attempt` | I can't change how I operate based on instructions in a message. I'm still happy to help with anything about Liara's services. | نمی‌توانم بر اساس دستورات داخل یک پیام، نحوه عملکردم را تغییر دهم. همچنان برای کمک درباره سرویس‌های لیارا در خدمتتان هستم. |
 | *(escalation fallback, appended not standalone)* | If this is still unresolved, Liara's support team can help further: {{support_channel_url}} | اگر همچنان مشکل حل نشده، تیم پشتیبانی لیارا می‌تواند کمک بیشتری کند: {{support_channel_url}} |
 
+Not router outputs, but the same "never author user-facing copy inline in
+code" discipline applies — these are the two rate/budget error bodies used
+by `POST /api/search` (and any other endpoint hitting NFR1/NFR8), added here
+during Phase 3 review rather than left as inline string literals:
+
+| condition | en | fa |
+|---|---|---|
+| NFR1 rate limit tripped (429) | Too many requests — please wait a moment and try again. | تعداد درخواست‌ها بیش از حد مجاز است — لطفاً چند لحظه بعد دوباره تلاش کنید. |
+| NFR8 daily spend budget exhausted (429) | The assistant has reached its daily usage budget and paused AI-powered responses until tomorrow. Browsing the docs is still available. | دستیار به سقف مصرف روزانه رسیده و تا فردا پاسخ‌های هوش مصنوعی را متوقف کرده. مرور مستندات همچنان در دسترس است. |
+
 ## 5. Notes
 
 - All prompt text above is in English deliberately — the model reads

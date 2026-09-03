@@ -1,2 +1,5 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\Ingestion\LiaraDocsAssistant.Ingestion.csproj" />
+  </ItemGroup>
 </Project>

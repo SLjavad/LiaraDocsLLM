@@ -1,4 +1,4 @@
-namespace LiaraDocsAssistant.Api.Redis;
+namespace LiaraDocsAssistant.Data.Redis;
 
 public static class RedisKeys
 {

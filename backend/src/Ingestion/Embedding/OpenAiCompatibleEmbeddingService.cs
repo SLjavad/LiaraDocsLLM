@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json.Serialization;
+using LiaraDocsAssistant.Data.Redis;
 
 namespace LiaraDocsAssistant.Ingestion.Embedding;
 
@@ -10,7 +11,8 @@ public sealed class OpenAiCompatibleEmbeddingService(
     string model,
     string apiKey,
     bool useInputType,
-    ILogger<OpenAiCompatibleEmbeddingService> logger) : IEmbeddingService
+    ILogger<OpenAiCompatibleEmbeddingService> logger,
+    ISpendGuard? spendGuard = null) : IEmbeddingService
 {
     public async Task<float[]> EmbedDocumentAsync(string text, CancellationToken ct = default)
     {
@@ -129,9 +131,14 @@ public sealed class OpenAiCompatibleEmbeddingService(
 
         if (payload.Usage is { } usage)
         {
+            var totalTokens = usage.TotalTokens ?? 0;
             logger.LogInformation(
                 "Embedding call {Model} embeddings items={Items} promptTokens={PromptTokens} totalTokens={TotalTokens}",
-                model, texts.Count, usage.PromptTokens, usage.TotalTokens);
+                model, texts.Count, usage.PromptTokens ?? 0, totalTokens);
+            if (totalTokens > 0 && spendGuard is not null)
+            {
+                await spendGuard.RecordAsync("embedding", totalTokens, ct);
+            }
         }
 
         if (payload.Data.Count != texts.Count)

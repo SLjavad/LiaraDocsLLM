@@ -3,6 +3,7 @@
   <ItemGroup>
     <ProjectReference Include="..\Data\LiaraDocsAssistant.Data.csproj" />
     <ProjectReference Include="..\Ingestion\LiaraDocsAssistant.Ingestion.csproj" />
+    <ProjectReference Include="..\Retrieval\LiaraDocsAssistant.Retrieval.csproj" />
   </ItemGroup>
 
   <ItemGroup>
