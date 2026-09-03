@@ -11,11 +11,11 @@ public sealed class SearchCache(IConnectionMultiplexer redis)
 {
     private static readonly TimeSpan Ttl = TimeSpan.FromHours(1);
 
-    public async Task<string?> GetRawAsync(string query, string? category, string? platform, CancellationToken ct = default)
+    public async Task<string?> GetRawAsync(string query, string? category, string? platform, string locale, CancellationToken ct = default)
     {
         try
         {
-            var json = await redis.GetDatabase().StringGetAsync(Key(query, category, platform));
+            var json = await redis.GetDatabase().StringGetAsync(Key(query, category, platform, locale));
             return json.IsNullOrEmpty ? null : json.ToString();
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -24,17 +24,17 @@ public sealed class SearchCache(IConnectionMultiplexer redis)
         }
     }
 
-    public async Task SetRawAsync(string query, string? category, string? platform, string json, CancellationToken ct = default)
+    public async Task SetRawAsync(string query, string? category, string? platform, string locale, string json, CancellationToken ct = default)
     {
         try
         {
-            await redis.GetDatabase().StringSetAsync(Key(query, category, platform), json, Ttl);
+            await redis.GetDatabase().StringSetAsync(Key(query, category, platform, locale), json, Ttl);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
         }
     }
 
-    private static string Key(string query, string? category, string? platform) =>
-        RedisKeys.CacheSearch(Retrieval.RetrievalScorer.Sha256Hex($"{query}|{category ?? ""}|{platform ?? ""}"));
+    private static string Key(string query, string? category, string? platform, string locale) =>
+        RedisKeys.CacheSearch(Retrieval.RetrievalScorer.Sha256Hex($"{query}|{category ?? ""}|{platform ?? ""}|{locale}"));
 }

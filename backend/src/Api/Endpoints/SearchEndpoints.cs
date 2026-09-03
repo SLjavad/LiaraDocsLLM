@@ -93,7 +93,7 @@ public static class SearchEndpoints
                 }, statusCode: StatusCodes.Status429TooManyRequests);
             }
 
-            var cached = await cache.GetRawAsync(query, request.Category, request.Platform, ct);
+            var cached = await cache.GetRawAsync(query, request.Category, request.Platform, locale, ct);
             if (cached is not null)
             {
                 return Results.Content(cached, "application/json; charset=utf-8");
@@ -119,7 +119,7 @@ public static class SearchEndpoints
                     message = RefusalTemplates.ForScope(routerResult.Scope, routerResult.Reason, locale),
                     results = Array.Empty<SearchResultDto>(),
                 });
-                await cache.SetRawAsync(query, request.Category, request.Platform, refusalJson, ct);
+                await cache.SetRawAsync(query, request.Category, request.Platform, locale, refusalJson, ct);
                 return Results.Content(refusalJson, "application/json; charset=utf-8");
             }
 
@@ -153,7 +153,7 @@ public static class SearchEndpoints
                     r.MatchedSubQuery)),
                 tookMs = (int)(DateTimeOffset.UtcNow - startedAt).TotalMilliseconds,
             });
-            await cache.SetRawAsync(query, request.Category, request.Platform, responseJson, ct);
+            await cache.SetRawAsync(query, request.Category, request.Platform, locale, responseJson, ct);
             return Results.Content(responseJson, "application/json; charset=utf-8");
         });
     }
