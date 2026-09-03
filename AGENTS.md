@@ -18,7 +18,7 @@ something you hit, stop and flag it rather than guessing.
 a different model via the OpenCode Go plan and scoped by edit permission to
 its own directory — switch between them with **Tab** or `@backend`/
 `@frontend` in the OpenCode TUI:
-- **`backend`** — `opencode-go/glm-5.3`, edit access restricted to
+- **`backend`** — `opencode-go/glm-5.3-flash`, edit access restricted to
   `backend/**`, `docker-compose.yml`, `.env.example`.
 - **`frontend`** — `opencode-go/kimi-k3`, edit access restricted to
   `frontend/**`.
@@ -26,6 +26,14 @@ its own directory — switch between them with **Tab** or `@backend`/
 Both are denied write access to `specs/**`, `AGENTS.md`, `CLAUDE.md`, and
 `.env` — spec changes are a tech-lead edit, never an implementation-agent
 one. Model ids confirmed against `https://opencode.ai/zen/go/v1/models`.
+
+**No git operations, ever** — `opencode.json`'s top-level `permission.bash`
+denies any `git *` command outright, for every agent, not just backend/
+frontend. OpenCode implements and reports; it never stages, commits,
+pushes, branches, or otherwise touches git history. Only the user, or
+Claude Code with the user's explicit approval, performs git operations in
+this repo. If a kickoff/fix prompt ever tells you to commit, that's a
+mistake in the prompt — implement the change and stop, don't run `git`.
 
 ## Codebase indexing tool
 
