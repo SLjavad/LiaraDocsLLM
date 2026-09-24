@@ -1,2 +1,15 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\Data\LiaraDocsAssistant.Data.csproj" />
+    <ProjectReference Include="..\Retrieval\LiaraDocsAssistant.Retrieval.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Pinned per specs/02-technical-spec.md §0. Microsoft.Agents.AI (1.18.0),
+         OpenAI (2.10.0), and Microsoft.Extensions.AI (10.7.0) come transitively
+         from this one package at the same release train. -->
+    <PackageReference Include="Microsoft.Agents.AI.OpenAI" Version="1.18.0" />
+  </ItemGroup>
+
 </Project>

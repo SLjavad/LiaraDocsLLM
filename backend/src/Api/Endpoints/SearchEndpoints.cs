@@ -1,5 +1,6 @@
 using LiaraDocsAssistant.Api.Caching;
 using LiaraDocsAssistant.Api.Configuration;
+using LiaraDocsAssistant.Api;
 using LiaraDocsAssistant.Api.RateLimiting;
 using LiaraDocsAssistant.Data;
 using LiaraDocsAssistant.Data.Redis;
@@ -64,11 +65,7 @@ public static class SearchEndpoints
                     statusCode: StatusCodes.Status400BadRequest);
             }
 
-            var query = request.Query.Trim();
-            if (query.Length > options.Api.MaxInputChars)
-            {
-                query = query[..options.Api.MaxInputChars];
-            }
+            var query = TextInput.TruncateSafely(request.Query.Trim(), options.Api.MaxInputChars);
 
             var sessionId = request.SessionId
                             ?? (Guid.TryParse(http.Request.Headers["X-Session-Id"].FirstOrDefault(), out var parsed)

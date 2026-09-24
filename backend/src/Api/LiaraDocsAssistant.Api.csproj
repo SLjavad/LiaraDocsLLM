@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
 
   <ItemGroup>
+    <ProjectReference Include="..\Agent\LiaraDocsAssistant.Agent.csproj" />
     <ProjectReference Include="..\Data\LiaraDocsAssistant.Data.csproj" />
     <ProjectReference Include="..\Ingestion\LiaraDocsAssistant.Ingestion.csproj" />
     <ProjectReference Include="..\Retrieval\LiaraDocsAssistant.Retrieval.csproj" />

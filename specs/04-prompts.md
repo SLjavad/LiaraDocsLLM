@@ -114,6 +114,43 @@ You never take actions on a user's actual Liara account or resources. You
 don't have API access to their account and would never claim to.
 ```
 
+## 1a. Chat orchestration notes (backend-injected, appended to §1)
+
+Not part of the primary system prompt above — these are backend orchestration
+control appended after it as a second block, the same "injected system note"
+mechanism `02-technical-spec.md` §5 already specifies for forcing the
+clarifying-round cap. Implement verbatim like every other prompt here; do not
+paraphrase.
+
+Exactly one of the two is appended per turn, never both.
+
+**Default (clarifying-rounds cap not yet reached), appended every turn:**
+```
+ORCHESTRATION NOTE (not shown to the user): if your reply to this turn is
+a clarifying question per the TRIAGE policy above (not a substantive
+answer), begin your reply with the exact literal text "[[CLARIFY]]"
+and nothing before it. Do not include this marker for any other kind of
+reply.
+```
+The backend needs to know, before it can emit the `meta` SSE event
+(`02-technical-spec.md` §6), whether this turn is a clarifying question or a
+real answer — before any text is generated. There is no structured signal for
+that from a single freeform completion otherwise. `[[CLARIFY]]` is stripped
+before anything reaches the client.
+
+**Once `roundsAsked >= MAX_CLARIFYING_ROUNDS`, replaces the note above for that turn:**
+```
+ORCHESTRATION NOTE (not shown to the user): the clarifying-question limit
+for this issue has been reached. Do not ask another clarifying question.
+Give your best-effort answer using whatever is already known, and clearly
+label any assumptions you had to make. Do not write your own pointer to
+Liara's support channel — the backend appends the standard escalation
+line after your answer automatically.
+```
+The backend appends the static escalation template (§4's "escalation
+fallback" row) itself in this case — deterministic, not model-generated,
+consistent with every other refusal/trivial template in this file.
+
 ## 2. Router prompt (scope-gate + `/api/search` decomposition)
 
 JSON-mode call. Interpolate the running `message`, `mode`, and

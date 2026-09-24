@@ -1,3 +1,4 @@
+using LiaraDocsAssistant.Agent;
 using LiaraDocsAssistant.Api.Caching;
 using LiaraDocsAssistant.Api.Configuration;
 using LiaraDocsAssistant.Api.Endpoints;
@@ -113,10 +114,20 @@ try
     builder.Services.AddSingleton<SeedRestoreService>();
     builder.Services.AddScoped<DocChunkStore>();
 
+    // OpenCode Go requires a stable x-opencode-session header per
+    // https://opencode.ai/docs/go/ ("so we can optimize routing and prompt
+    // caching") — without it every call 400s with MissingSessionID. One id
+    // per process is a stable identity for this backend's traffic; switching
+    // CHAT_MODEL_BASE_URL to a different OpenAI-compatible provider makes
+    // this header simply unused, never a hard dependency (NFR2).
+    var chatProviderSessionId = Guid.NewGuid().ToString("N");
+
     builder.Services.AddHttpClient("chat", client =>
         {
             client.BaseAddress = new Uri(options.ChatModel.BaseUrl.TrimEnd('/') + "/");
             client.Timeout = Timeout.InfiniteTimeSpan;
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("LiaraDocsAssistant/1.0");
+            client.DefaultRequestHeaders.Add("x-opencode-session", chatProviderSessionId);
         })
         .AddStandardResilienceHandler(resilience =>
         {
@@ -143,6 +154,24 @@ try
         options.Retrieval.TopK,
         options.Retrieval.GroundednessThreshold,
         sp.GetRequiredService<ILogger<HybridRetrievalService>>()));
+
+    builder.Services.AddSingleton<ChatAgentFactory>(sp => new ChatAgentFactory(
+        sp.GetRequiredService<IHttpClientFactory>().CreateClient("chat"),
+        options.ChatModel.BaseUrl,
+        options.ChatModel.ApiKey,
+        options.ChatModel.ModelName));
+
+    const int chatHistoryMessageLimit = 20;
+    builder.Services.AddScoped<ChatOrchestrator>(sp => new ChatOrchestrator(
+        sp.GetRequiredService<AppDbContext>(),
+        sp.GetRequiredService<IRouterService>(),
+        sp.GetRequiredService<IRetrievalService>(),
+        sp.GetRequiredService<ChatAgentFactory>(),
+        sp.GetRequiredService<ISpendGuard>(),
+        options.Api.SupportChannelUrl ?? string.Empty,
+        options.Triage.MaxClarifyingRounds,
+        chatHistoryMessageLimit,
+        sp.GetRequiredService<ILogger<ChatOrchestrator>>()));
 
     builder.Services.AddSingleton<RateLimiter>();
     builder.Services.AddSingleton<SearchCache>();
@@ -178,6 +207,8 @@ try
     app.UseCors();
 
     app.MapSearchEndpoints();
+    app.MapChatEndpoints();
+    app.MapFeedbackEndpoints();
 
     app.MapGet("/health", async (AppDbContext db, ILogger<Program> logger, CancellationToken ct) =>
     {
