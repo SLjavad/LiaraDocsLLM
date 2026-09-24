@@ -45,6 +45,24 @@ prefer these tools over ad-hoc grepping for understanding how existing code
 relates before making cross-cutting changes. Not useful yet against just the
 specs — its value kicks in once `backend/`/`frontend/` have real code.
 
+Two separate, non-syncing instances exist (Windows-native for Claude Code,
+WSL-native for OpenCode) — see project memory for why they never converge and
+must be bridged manually. Install/update method differs per side:
+- **Claude Code (Windows)**: managed via npm (`npm install -g
+  codebase-memory-mcp@latest`), with `.claude.json`'s MCP entry pointed
+  directly at the installed binary
+  (`%APPDATA%/npm/node_modules/codebase-memory-mcp/bin/codebase-memory-mcp.exe`).
+  Restart Claude Code after updating so the new binary process picks up (the
+  tool refuses to run two different versions concurrently). Do **not** use
+  this project's standalone `install.ps1`/`setup-windows.ps1` downloader on
+  this machine — it has twice been flagged and quarantined as a trojan by
+  the local antivirus (unconfirmed whether false positive; not worth
+  fighting when the npm path works).
+- **OpenCode (WSL)**: a standalone native binary at `~/.local/bin/`, updated
+  via `bash ~/.local/bin/install.sh` (or the raw GitHub install.sh one-liner
+  if that file is missing) — unaffected by the Windows AV, since WSL is a
+  separate Linux filesystem/scan surface.
+
 ## Source of truth (read before writing any code)
 
 - `specs/01-architecture.md` — business context, personas, architecture,
