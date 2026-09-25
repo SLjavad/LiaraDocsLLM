@@ -18,6 +18,13 @@ public static class DocsTaxonomy
         new("overview", "overview", "معرفی کلی", "Overview"),
     ];
 
+    /// <summary>
+    /// "- id: labelEn / labelFa" lines, the exact rendering specs/04-prompts.md
+    /// §1 and §2a specify for {{taxonomy_list}}.
+    /// </summary>
+    public static string RenderForPrompt() =>
+        string.Join('\n', Categories.Select(c => $"- {c.Id}: {c.LabelEn} / {c.LabelFa}"));
+
     public static string? MatchPathSegment(string? absolutePath)
     {
         if (string.IsNullOrWhiteSpace(absolutePath))

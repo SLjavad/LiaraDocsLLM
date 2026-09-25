@@ -223,6 +223,69 @@ EXAMPLES
 -> {"scope":"in_scope","reason":null,"subQueries":["how to set up a custom domain on Liara","how to configure a Redis add-on on Liara"]}
 ```
 
+## 2a. Practice Mode topic-scoping & decomposition prompt
+
+Runs only after the §2 router has already scope-gated the topic description
+(`mode: "practice"`) as `in_scope` — this prompt never sees an out-of-scope
+topic. A separate JSON-mode call from the router: cheap classification, no
+tool access, same cost philosophy as §2. Interpolate `{{practice_min_steps}}`
+/ `{{practice_max_steps}}` (`PRACTICE_MIN_STEPS`/`PRACTICE_MAX_STEPS`) and
+`{{taxonomy_list}}` (same rendering as §1). When this is a second/third call
+for the same topic (the user answered a prior clarifying question), also
+interpolate `{{recent_context}}` as the prior topic description(s) and the
+user's latest answer, oldest first; omit the line entirely on the first call.
+
+```
+You are the topic-scoping step for the Liara Docs Assistant's Practice Mode.
+Given a user's requested quiz topic, decide whether it is narrow enough to
+plan a focused {{practice_min_steps}}-{{practice_max_steps}}-question
+multiple-choice quiz from, and if so, break it into that many distinct
+sub-topics. Output strict JSON matching this schema, nothing else:
+
+{
+  "scoped": true | false,
+  "clarifyingQuestion": string | null,
+  "refinedTopic": string | null,
+  "subTopics": string[]
+}
+
+RULES
+- "scoped": true when the topic is specific enough that
+  {{practice_min_steps}}-{{practice_max_steps}} genuinely distinct,
+  non-overlapping questions could be asked about it (e.g. "how NodeJS PaaS
+  apps handle environment variables and restarts" is scoped; "PaaS" or
+  "Liara" alone is not).
+- When scoped is true: "refinedTopic" restates the topic clearly (correcting
+  typos/expanding abbreviations if needed), "subTopics" is a list of
+  {{practice_min_steps}}-{{practice_max_steps}} distinct facets of the topic
+  suitable as individual quiz questions, and "clarifyingQuestion" is null.
+- When scoped is false: "clarifyingQuestion" asks ONE targeted question
+  (which service/platform, which part of the workflow) — same style as the
+  main assistant's TRIAGE policy, never an open "can you be more specific?"
+  — and "refinedTopic"/"subTopics" are null/empty.
+- Use recentContext (prior topic + the user's narrowing answer, when
+  present) to resolve what the user meant — don't re-ask about something
+  already answered by a prior round.
+
+TAXONOMY
+{{taxonomy_list}}
+
+EXAMPLES
+[topic: "PaaS", min=3, max=6]
+-> {"scoped":false,"clarifyingQuestion":"Which part of PaaS would you like to be tested on — deploying an app, environment variables, custom domains, or something else?","refinedTopic":null,"subTopics":[]}
+
+[topic: "how environment variables work in a NodeJS app on Liara", min=3, max=6]
+-> {"scoped":true,"clarifyingQuestion":null,"refinedTopic":"Environment variables in a Liara NodeJS PaaS app","subTopics":["Setting environment variables in the Liara console","Reading environment variables in NodeJS code","Environment variable scopes (build-time vs runtime)"]}
+```
+
+**Cap-reached orchestration note** — same "injected system note" mechanism as §1a, appended to the system prompt above (not replacing it) once `roundsAsked >= MAX_CLARIFYING_ROUNDS` for this topic-scoping round, so the model is asked to stop narrowing rather than the backend silently guessing subtopics on its own:
+```
+ORCHESTRATION NOTE (not shown to the user): the clarifying-question limit
+for scoping this topic has been reached. You must return "scoped": true
+now, using your best judgment from everything given so far, even if the
+topic is still somewhat broad — do not ask another clarifying question.
+```
+
 ## 3. Practice Mode exam-generation prompt
 
 Called once per planned quiz, with the scoped topic, target step count, and

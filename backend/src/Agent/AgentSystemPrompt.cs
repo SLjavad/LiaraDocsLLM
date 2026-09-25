@@ -113,10 +113,7 @@ public static class AgentSystemPrompt
 
     public static string Render(string supportChannelUrl, string userProfileNote) =>
         Template
-            .Replace("{{taxonomy_list}}", RenderTaxonomyList())
+            .Replace("{{taxonomy_list}}", DocsTaxonomy.RenderForPrompt())
             .Replace("{{support_channel_url}}", supportChannelUrl)
             .Replace("{{user_profile_note}}", userProfileNote);
-
-    private static string RenderTaxonomyList() =>
-        string.Join('\n', DocsTaxonomy.Categories.Select(c => $"- {c.Id}: {c.LabelEn} / {c.LabelFa}"));
 }

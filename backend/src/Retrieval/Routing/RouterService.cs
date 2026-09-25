@@ -1,7 +1,6 @@
-using System.Net.Http.Json;
 using System.Text.Json;
-using Microsoft.Extensions.Logging;
 using System.Text.Json.Serialization;
+using Microsoft.Extensions.Logging;
 using LiaraDocsAssistant.Data.Redis;
 
 namespace LiaraDocsAssistant.Retrieval.Routing;
@@ -26,9 +25,7 @@ public sealed class RouterService(
 
     public async Task<RouterResult> ClassifyAsync(RouterRequest request, CancellationToken ct = default)
     {
-        using var httpRequest = new HttpRequestMessage(HttpMethod.Post, "chat/completions");
-        httpRequest.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
-        httpRequest.Content = JsonContent.Create(new
+        var result = await JsonModeChatClient.CallAsync(http, apiKey, new
         {
             model = routerModelName,
             messages = new object[]
@@ -38,22 +35,9 @@ public sealed class RouterService(
             },
             response_format = new { type = "json_object" },
             temperature = 0,
-        });
+        }, ct);
 
-        using var response = await http.SendAsync(httpRequest, ct);
-        if (!response.IsSuccessStatusCode)
-        {
-            var body = await response.Content.ReadAsStringAsync(ct);
-            throw new HttpRequestException(
-                $"router chat-completions call returned {(int)response.StatusCode}: {Truncate(body)}",
-                null,
-                response.StatusCode);
-        }
-
-        var payload = await response.Content.ReadFromJsonAsync<ChatCompletionsResponse>(JsonOptions, ct)
-                      ?? throw new InvalidOperationException("router returned an empty chat-completions payload");
-
-        var usage = payload.Usage;
+        var usage = result.Usage;
         if (usage is not null)
         {
             logger.LogInformation(
@@ -65,7 +49,7 @@ public sealed class RouterService(
             }
         }
 
-        var content = payload.Choices?.FirstOrDefault()?.Message?.Content
+        var content = result.Content
                       ?? throw new InvalidOperationException("router returned no message content");
 
         var parsed = ParseRouterJson(content);
@@ -88,29 +72,19 @@ public sealed class RouterService(
         var lines = new List<string>();
         if (request.RecentMessages is { Count: > 0 } recent)
         {
-            lines.Add($"[recent: {string.Join(", ", recent.Take(4).Select(m => $"\"{Escape(m)}\""))}]");
+            lines.Add($"[recent: {string.Join(", ", recent.Take(4).Select(m => $"\"{JsonModeChatClient.Escape(m)}\""))}]");
         }
 
         lines.Add(request.Mode == "search"
-            ? $"[input, mode=search: \"{Escape(request.Message)}\"]"
-            : $"[input: \"{Escape(request.Message)}\"]");
+            ? $"[input, mode=search: \"{JsonModeChatClient.Escape(request.Message)}\"]"
+            : $"[input: \"{JsonModeChatClient.Escape(request.Message)}\"]");
 
         return string.Join("\n", lines);
     }
 
     internal static RouterResult ParseRouterJson(string content)
     {
-        var json = content.Trim();
-        if (json.StartsWith("```"))
-        {
-            var firstNewline = json.IndexOf('\n');
-            var lastFence = json.LastIndexOf("```", StringComparison.Ordinal);
-            if (firstNewline >= 0 && lastFence > firstNewline)
-            {
-                json = json[(firstNewline + 1)..lastFence].Trim();
-            }
-        }
-
+        var json = JsonModeHelpers.StripCodeFence(content);
         var parsed = JsonSerializer.Deserialize<RouterPayload>(json, JsonOptions)
                      ?? throw new InvalidOperationException("router JSON deserialized to null");
 
@@ -120,27 +94,8 @@ public sealed class RouterService(
             parsed.SubQueries ?? []);
     }
 
-    private static string Escape(string s) => s.Replace("\"", "'");
-
-    private static string Truncate(string s) => s.Length <= 300 ? s : s[..300] + "…";
-
     private sealed record RouterPayload(
         [property: JsonPropertyName("scope")] string? Scope,
         [property: JsonPropertyName("reason")] string? Reason,
         [property: JsonPropertyName("subQueries")] List<string>? SubQueries);
-
-    private sealed record ChatCompletionsResponse(
-        [property: JsonPropertyName("choices")] List<Choice>? Choices,
-        [property: JsonPropertyName("usage")] Usage? Usage);
-
-    private sealed record Choice(
-        [property: JsonPropertyName("message")] Message? Message);
-
-    private sealed record Message(
-        [property: JsonPropertyName("content")] string? Content);
-
-    private sealed record Usage(
-        [property: JsonPropertyName("prompt_tokens")] int? PromptTokens,
-        [property: JsonPropertyName("completion_tokens")] int? CompletionTokens,
-        [property: JsonPropertyName("total_tokens")] int? TotalTokens);
 }
