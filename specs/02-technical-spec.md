@@ -408,7 +408,7 @@ Events (each `data:` line is JSON):
 | `meta` | `{ "kind": "escalation" }` | escalation fallback triggered |
 | `token` | `{ "delta": "..." }` | streamed answer/question/refusal text, repeated |
 | `sources` | `{ "sources": [{title,url,anchor,score}] }` | once, only for `kind: "answer"`, before `done` |
-| `done` | `{}` | end of turn |
+| `done` | `{ "messageId": "uuid" }` | end of turn — `messageId` is the just-persisted assistant message's id, needed by the frontend to call `POST /api/feedback` on a message from the *current* session without a round-trip through `GET /api/sessions/{id}/messages` (added during Phase 5 frontend build, when this gap surfaced) |
 | `error` | `{ "message": "...", "retryable": true }` | NFR4 failure path, in place of a raw 500 |
 
 ### 6a. Practice Mode endpoints

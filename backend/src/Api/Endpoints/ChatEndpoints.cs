@@ -91,7 +91,7 @@ public static class ChatEndpoints
                 {
                     await WriteEventAsync(http, "sources", new { sources = result.Sources }, ct);
                 }
-                await WriteEventAsync(http, "done", new { }, ct);
+                await WriteEventAsync(http, "done", new { messageId = result.MessageId }, ct);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {

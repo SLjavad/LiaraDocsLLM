@@ -31,6 +31,9 @@ public static class RefusalTemplates
     public const string SpendBudgetEn = "The assistant has reached its daily usage budget and paused AI-powered responses until tomorrow. Browsing the docs is still available.";
     public const string SpendBudgetFa = "دستیار به سقف مصرف روزانه رسیده و تا فردا پاسخ‌های هوش مصنوعی را متوقف کرده. مرور مستندات همچنان در دسترس است.";
 
+    public const string InsufficientMaterialEn = "This topic doesn't have enough documented material yet for a good quiz — try Find-in-docs, or a narrower topic.";
+    public const string InsufficientMaterialFa = "مستندات کافی برای طراحی یک آزمون خوب درباره این موضوع وجود ندارد — می‌توانید از جست‌وجو در مستندات استفاده کنید یا موضوع را دقیق‌تر بیان کنید.";
+
     public static string ForScope(string? scope, string? reason, string locale) =>
         scope == RouterResult.ScopeTrivial
             ? Pick(locale, TrivialEn, TrivialFa)

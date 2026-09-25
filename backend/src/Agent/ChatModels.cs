@@ -13,4 +13,5 @@ public sealed record ChatTurnResult(
     string? Reason, // scope_refusal only
     int? TriageRound, // triage only
     string Text,
-    IReadOnlyList<ChatSourceDto>? Sources); // non-null only when Kind == "answer"
+    IReadOnlyList<ChatSourceDto>? Sources, // non-null only when Kind == "answer"
+    Guid MessageId); // the persisted assistant message's id, for POST /api/feedback

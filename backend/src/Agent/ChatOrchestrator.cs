@@ -73,8 +73,8 @@ public sealed class ChatOrchestrator(
             {
                 session.PendingClarification = null;
             }
-            await PersistAssistantMessageAsync(session, refusalText, sources: null, routerResult.Scope, ct);
-            return new ChatTurnResult("scope_refusal", routerResult.Reason, null, refusalText, null);
+            var refusalMessageId = await PersistAssistantMessageAsync(session, refusalText, sources: null, routerResult.Scope, ct);
+            return new ChatTurnResult("scope_refusal", routerResult.Reason, null, refusalText, null, refusalMessageId);
         }
 
         var forceEscalation = pending is not null && pending.RoundsAsked >= maxClarifyingRounds;
@@ -146,19 +146,19 @@ public sealed class ChatOrchestrator(
             var originalQuery = pending?.OriginalQuery ?? message;
             session.PendingClarification = SessionStore.SerializePendingClarification(
                 new PendingClarificationState(PendingClarificationState.ModeChat, originalQuery, nextRound));
-            await PersistAssistantMessageAsync(session, text, sources: null, routerResult.Scope, ct);
-            return new ChatTurnResult("triage", null, nextRound, text, null);
+            var triageMessageId = await PersistAssistantMessageAsync(session, text, sources: null, routerResult.Scope, ct);
+            return new ChatTurnResult("triage", null, nextRound, text, null, triageMessageId);
         }
 
         if (pending is not null)
         {
             session.PendingClarification = null;
         }
-        await PersistAssistantMessageAsync(session, text, collectedSources, routerResult.Scope, ct);
+        var answerMessageId = await PersistAssistantMessageAsync(session, text, collectedSources, routerResult.Scope, ct);
 
         return forceEscalation
-            ? new ChatTurnResult("escalation", null, null, text, null)
-            : new ChatTurnResult("answer", null, null, text, collectedSources);
+            ? new ChatTurnResult("escalation", null, null, text, null, answerMessageId)
+            : new ChatTurnResult("answer", null, null, text, collectedSources, answerMessageId);
     }
 
     private async Task<IReadOnlyList<ChatMessage>> BuildHistoryAsync(Guid sessionId, CancellationToken ct)
@@ -179,22 +179,24 @@ public sealed class ChatOrchestrator(
             m.Content))];
     }
 
-    private async Task PersistAssistantMessageAsync(
+    private async Task<Guid> PersistAssistantMessageAsync(
         Session session,
         string content,
         IReadOnlyList<ChatSourceDto>? sources,
         string routerScope,
         CancellationToken ct)
     {
-        db.Messages.Add(new Message
+        var message = new Message
         {
             SessionId = session.Id,
             Role = "assistant",
             Content = content,
             Sources = sources is { Count: > 0 } ? JsonSerializer.Serialize(sources, JsonOptions) : null,
             RouterScope = routerScope,
-        });
-        await db.SaveChangesAsync(ct);
+        };
+        db.Messages.Add(message);
+        await db.SaveChangesAsync(ct); // populates message.Id from the DB's gen_random_uuid() default
+        return message.Id;
     }
 
     private async Task RecordChatSpendAsync(AgentResponse response, CancellationToken ct)

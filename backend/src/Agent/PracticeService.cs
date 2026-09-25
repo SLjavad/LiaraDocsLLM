@@ -108,7 +108,7 @@ public sealed class PracticeService(
         {
             await db.SaveChangesAsync(ct); // flushes the pending-clarification clear above, if any
             return PracticeStartResult.InsufficientMaterial(
-                "This topic doesn't have enough documented material yet for a good quiz — try Find-in-docs, or a narrower topic.");
+                RefusalTemplates.Pick(locale, RefusalTemplates.InsufficientMaterialEn, RefusalTemplates.InsufficientMaterialFa));
         }
 
         var generated = await examGeneration.GenerateAsync(topic, groundedChunks, ct);
@@ -164,7 +164,7 @@ public sealed class PracticeService(
         {
             await db.SaveChangesAsync(ct); // persist any doc_gap_events recorded above even though we're bailing out
             return PracticeStartResult.InsufficientMaterial(
-                "This topic doesn't have enough documented material yet for a good quiz — try Find-in-docs, or a narrower topic.");
+                RefusalTemplates.Pick(locale, RefusalTemplates.InsufficientMaterialEn, RefusalTemplates.InsufficientMaterialFa));
         }
 
         var exam = new PracticeExam

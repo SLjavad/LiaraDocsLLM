@@ -1,0 +1,96 @@
+import type { Locale } from "./types";
+
+export const strings = {
+  fa: {
+    appName: "دستیار مستندات لیارا",
+    nav: { chat: "پرسش از دستیار", search: "جست‌وجو در مستندات", practice: "حالت تمرین" },
+    chat: {
+      placeholder: "سوال خود را درباره لیارا بپرسید…",
+      send: "ارسال",
+      explainError: "توضیح خطا",
+      explainErrorPlaceholder: "متن خطا را اینجا جای‌گذاری کنید:\n\n",
+      triageBadge: (round: number) => `سوال تکمیلی (دور ${round})`,
+      escalationBadge: "نیاز به پیگیری بیشتر",
+      emptyState: "هر سوالی درباره استقرار، پیکربندی یا رفع‌اشکال سرویس‌های لیارا دارید بپرسید.",
+      thinking: "در حال فکر کردن…",
+    },
+    search: {
+      placeholder: "در مستندات جست‌وجو کنید…",
+      button: "جست‌وجو",
+      categoryAll: "همه دسته‌ها",
+      noResults: "نتیجه‌ای یافت نشد.",
+      matchedFor: (q: string) => `نتایج برای: «${q}»`,
+    },
+    practice: {
+      topicPlaceholder: "موضوعی که می‌خواهید روی آن آزمون بدهید را بنویسید…",
+      start: "شروع تمرین",
+      submit: "ثبت پاسخ",
+      next: "سوال بعدی",
+      seeSummary: "مشاهده نتیجه",
+      stepOf: (i: number, n: number) => `مرحله ${i} از ${n}`,
+      correct: "پاسخ درست بود!",
+      incorrect: "پاسخ نادرست بود.",
+      correctAnswerWas: "پاسخ درست:",
+      summaryTitle: "نتیجه تمرین",
+      scoreLabel: (correct: number, total: number) => `${correct} از ${total} پاسخ درست`,
+      restart: "شروع تمرین جدید",
+      needsClarification: "لطفاً موضوع را دقیق‌تر مشخص کنید",
+      answerPlaceholder: "پاسخ خود را بنویسید…",
+    },
+    common: {
+      retry: "تلاش مجدد",
+      loading: "در حال بارگذاری…",
+      error: "مشکلی پیش آمد.",
+      sources: "منابع",
+      feedbackPrompt: "این پاسخ مفید بود؟",
+    },
+  },
+  en: {
+    appName: "Liara Docs Assistant",
+    nav: { chat: "Ask Assistant", search: "Find in Docs", practice: "Practice Mode" },
+    chat: {
+      placeholder: "Ask anything about Liara…",
+      send: "Send",
+      explainError: "Explain this error",
+      explainErrorPlaceholder: "Paste the error text here:\n\n",
+      triageBadge: (round: number) => `Clarifying question (round ${round})`,
+      escalationBadge: "Needs further follow-up",
+      emptyState: "Ask anything about deploying, configuring, or troubleshooting Liara's services.",
+      thinking: "Thinking…",
+    },
+    search: {
+      placeholder: "Search the docs…",
+      button: "Search",
+      categoryAll: "All categories",
+      noResults: "No results found.",
+      matchedFor: (q: string) => `Results for: "${q}"`,
+    },
+    practice: {
+      topicPlaceholder: "What topic would you like to be quizzed on?",
+      start: "Start practice",
+      submit: "Submit answer",
+      next: "Next question",
+      seeSummary: "See summary",
+      stepOf: (i: number, n: number) => `Step ${i} of ${n}`,
+      correct: "That's correct!",
+      incorrect: "That's not quite right.",
+      correctAnswerWas: "Correct answer:",
+      summaryTitle: "Practice summary",
+      scoreLabel: (correct: number, total: number) => `${correct} of ${total} correct`,
+      restart: "Start a new practice",
+      needsClarification: "Please narrow down the topic",
+      answerPlaceholder: "Type your answer…",
+    },
+    common: {
+      retry: "Retry",
+      loading: "Loading…",
+      error: "Something went wrong.",
+      sources: "Sources",
+      feedbackPrompt: "Was this helpful?",
+    },
+  },
+} satisfies Record<Locale, unknown>;
+
+export function t(locale: Locale) {
+  return strings[locale];
+}
