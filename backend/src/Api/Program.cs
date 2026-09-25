@@ -171,6 +171,7 @@ try
         options.Api.SupportChannelUrl ?? string.Empty,
         options.Triage.MaxClarifyingRounds,
         chatHistoryMessageLimit,
+        options.Retrieval.TopK,
         sp.GetRequiredService<ILogger<ChatOrchestrator>>()));
 
     builder.Services.AddSingleton<RateLimiter>();

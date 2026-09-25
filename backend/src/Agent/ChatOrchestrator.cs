@@ -34,6 +34,7 @@ public sealed class ChatOrchestrator(
     string supportChannelUrl,
     int maxClarifyingRounds,
     int maxHistoryMessages,
+    int maxSourcesInAnswer,
     ILogger<ChatOrchestrator> logger)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
@@ -75,7 +76,11 @@ public sealed class ChatOrchestrator(
         var response = await agent.RunAsync(history, session: null, options: null, ct);
         await RecordChatSpendAsync(response, ct);
 
-        var rawText = response.Text ?? string.Empty;
+        // AgentResponse.Text concatenates text from EVERY message the run
+        // produced, including intermediate tool-planning narration between
+        // search_docs calls ("Let me try a couple more phrasings...") — only
+        // the final assistant message is the actual answer to show the user.
+        var rawText = response.Messages.LastOrDefault(m => m.Role == ChatRole.Assistant)?.Text ?? string.Empty;
         var trimmedText = rawText.TrimStart();
         var hasClarifyMarker = trimmedText.StartsWith(AgentOrchestrationNotes.ClarifyMarker, StringComparison.Ordinal);
         // Strip the marker whenever present, even in forceEscalation mode — the
@@ -86,7 +91,13 @@ public sealed class ChatOrchestrator(
             : rawText;
         var isClarifying = !forceEscalation && hasClarifyMarker;
 
+        // A multi-hop turn can call search_docs many times over several
+        // rephrasings before landing on a good answer; without a cap the
+        // merged, deduped set can still run into dozens of low-relevance
+        // results. Capped to the same top-K the spec already uses for one
+        // retrieval call, not a new magic number.
         var collectedSources = SearchMerger.Merge([("", tools.CollectedSources)])
+            .Take(maxSourcesInAnswer)
             .Select(r => new ChatSourceDto(r.Title, r.Url, r.Anchor, Math.Round(r.Score, 4)))
             .ToList();
 

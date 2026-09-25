@@ -20,7 +20,12 @@ services:
     image: redis:8.8-alpine
     container_name: liara-docs-redis
     ports:
-      - "6379:6379"
+      # Host-side port only (container still listens on 6379 internally) —
+      # 6379 sometimes falls inside a Windows-reserved dynamic port-exclusion
+      # range (netsh interface ipv4 show excludedportrange), which makes
+      # Docker Desktop's proxy fail to bind it. Remapped to sidestep that
+      # rather than touching Windows networking system-wide.
+      - "16379:6379"
     volumes:
       - redis_data:/data
     healthcheck:

@@ -96,7 +96,19 @@ public static class ChatEndpoints
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 logger.LogError(ex, "Unhandled error during /api/chat turn for session {SessionId}", sessionId);
-                await WriteEventAsync(http, "error", new { message = "Something went wrong generating a response.", retryable = true }, ct);
+                try
+                {
+                    // CancellationToken.None: if ct is already cancelled (e.g. the
+                    // request timed out upstream) this write is our last chance to
+                    // tell the client anything at all; if the connection itself is
+                    // gone this throws too, which is fine to swallow — there's no
+                    // one left to write to.
+                    await WriteEventAsync(http, "error", new { message = "Something went wrong generating a response.", retryable = true }, CancellationToken.None);
+                }
+                catch (Exception writeEx)
+                {
+                    logger.LogWarning(writeEx, "Could not send the SSE error event for session {SessionId}; client likely disconnected", sessionId);
+                }
             }
 
             return Results.Empty;
@@ -105,16 +117,22 @@ public static class ChatEndpoints
         app.MapGet("/api/sessions/{sessionId:guid}/messages", async (
             Guid sessionId, AppDbContext db, CancellationToken ct) =>
         {
-            var messages = await db.Messages.AsNoTracking()
+            // Deserializing Sources must happen after materialization, not inside
+            // the EF projection — EF Core refuses to translate a query that
+            // passes a captured JsonSerializerOptions constant into
+            // JsonSerializer.Deserialize within the SQL projection itself
+            // (a compiled-query-cache safety check, not a workaround-able quirk).
+            var rows = await db.Messages.AsNoTracking()
                 .Where(m => m.SessionId == sessionId)
                 .OrderBy(m => m.CreatedAt)
-                .Select(m => new SessionMessageDto(
-                    m.Id,
-                    m.Role,
-                    m.Content,
-                    m.Sources == null ? null : JsonSerializer.Deserialize<object>(m.Sources, JsonOptions),
-                    m.CreatedAt))
                 .ToListAsync(ct);
+
+            var messages = rows.Select(m => new SessionMessageDto(
+                m.Id,
+                m.Role,
+                m.Content,
+                m.Sources == null ? null : JsonSerializer.Deserialize<object>(m.Sources, JsonOptions),
+                m.CreatedAt));
 
             return Results.Ok(new { messages });
         });
